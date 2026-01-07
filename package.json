@@ -1,0 +1,49 @@
+{
+    "name": "koishi-plugin-disaster-warning",
+    "description": "Koishi 灾害预警插件，支持多数据源（地震、海啸、气象预警）",
+    "version": "0.0.4",
+    "main": "lib/index.js",
+    "typings": "lib/index.d.ts",
+    "files": [
+        "lib",
+        "dist"
+    ],
+    "license": "AGPL-3.0",
+    "scripts": {
+        "build": "tsc",
+        "lint": "eslint src --ext .ts"
+    },
+    "keywords": [
+        "koishi",
+        "plugin",
+        "disaster",
+        "earthquake",
+        "warning"
+    ],
+    "peerDependencies": {
+        "koishi": "^4.18.0"
+    },
+    "dependencies": {
+        "ws": "^8.18.0"
+    },
+    "devDependencies": {
+        "@types/node": "^20.0.0",
+        "@types/ws": "^8.5.10",
+        "koishi": "^4.18.0",
+        "typescript": "^5.0.0"
+    },
+    "koishi": {
+        "description": {
+            "en": "Disaster warning plugin for Koishi, supporting Earthquake, Tsunami, and Weather alerts from multiple sources.",
+            "zh": "Koishi 灾害预警插件，支持多数据源（地震、海啸、气象预警）"
+        },
+        "service": {
+            "required": [
+                "http"
+            ],
+            "optional": [
+                "database"
+            ]
+        }
+    }
+}
