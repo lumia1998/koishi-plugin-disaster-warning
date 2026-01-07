@@ -50,16 +50,24 @@ export class DisasterWarningService {
     }
 
     private connectAll() {
-        if (this.config.data_sources.fan_studio.enabled) {
+        const ds = this.config.data_sources
+
+        // Fan Studio: Connect if any sub-option is enabled
+        if (Object.values(ds.fan_studio).some(v => v)) {
             this.connectFanStudio()
         }
-        if (this.config.data_sources.p2p_earthquake.enabled) {
+
+        // P2P: Connect if any sub-option is enabled
+        if (Object.values(ds.p2p_earthquake).some(v => v)) {
             this.connectP2P()
         }
-        if (this.config.data_sources.wolfx.enabled) {
+
+        // Wolfx: Connect if any sub-option is enabled
+        if (Object.values(ds.wolfx).some(v => v)) {
             this.connectWolfx()
         }
-        if (this.config.data_sources.global_quake.enabled) {
+
+        if (ds.global_quake.enabled) {
             this.connectGlobalQuake()
         }
     }
