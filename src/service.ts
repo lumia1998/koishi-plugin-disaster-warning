@@ -102,7 +102,56 @@ export class DisasterWarningService {
 
     private async handleEvent(event: DisasterEvent | null) {
         if (!event) return
+        if (!this.shouldPushEvent(event)) return
         await this.pusher.pushEvent(event)
+    }
+
+    private shouldPushEvent(event: DisasterEvent): boolean {
+        const ds = this.config.data_sources
+        switch (event.source) {
+            // Fan Studio
+            case 'fan_studio_cea' as any: // DataSource.FAN_STUDIO_CEA
+                return ds.fan_studio.china_earthquake_warning
+            case 'fan_studio_cwa' as any: // DataSource.FAN_STUDIO_CWA
+                return ds.fan_studio.taiwan_cwa_earthquake
+            case 'fan_studio_cenc' as any: // DataSource.FAN_STUDIO_CENC
+                return ds.fan_studio.china_cenc_earthquake
+            case 'fan_studio_jma' as any: // DataSource.FAN_STUDIO_JMA
+                return ds.fan_studio.japan_jma_eew
+            case 'fan_studio_usgs' as any: // DataSource.FAN_STUDIO_USGS
+                return ds.fan_studio.usgs_earthquake
+            case 'fan_studio_weather' as any: // DataSource.FAN_STUDIO_WEATHER
+                return ds.fan_studio.china_weather_alarm
+            case 'fan_studio_tsunami' as any: // DataSource.FAN_STUDIO_TSUNAMI
+                return ds.fan_studio.china_tsunami
+
+            // P2P
+            case 'p2p_eew' as any: // DataSource.P2P_EEW
+                return ds.p2p_earthquake.japan_jma_eew
+            case 'p2p_earthquake' as any: // DataSource.P2P_EARTHQUAKE
+                return ds.p2p_earthquake.japan_jma_earthquake
+            case 'p2p_tsunami' as any: // DataSource.P2P_TSUNAMI
+                return ds.p2p_earthquake.japan_jma_tsunami
+
+            // Wolfx
+            case 'wolfx_jma_eew' as any: // DataSource.WOLFX_JMA_EEW
+                return ds.wolfx.japan_jma_eew
+            case 'wolfx_cenc_eew' as any: // DataSource.WOLFX_CENC_EEW
+                return ds.wolfx.china_cenc_eew
+            case 'wolfx_cwa_eew' as any: // DataSource.WOLFX_CWA_EEW
+                return ds.wolfx.taiwan_cwa_eew
+            case 'wolfx_jma_eq' as any: // DataSource.WOLFX_JMA_EQ
+                return ds.wolfx.japan_jma_earthquake
+            case 'wolfx_cenc_eq' as any: // DataSource.WOLFX_CENC_EQ
+                return ds.wolfx.china_cenc_earthquake
+
+            // Global Quake
+            case 'global_quake' as any: // DataSource.GLOBAL_QUAKE
+                return ds.global_quake.enabled
+
+            default:
+                return true
+        }
     }
 
     private connectFanStudio() {
