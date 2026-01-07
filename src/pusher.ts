@@ -146,15 +146,8 @@ export class MessagePushManager {
 
     private async broadcast(message: string | h[]) {
         for (const groupId of this.config.target_groups) {
-            // Construct session string like "platform:groupId" or use bot.sendMessage
-            // Koishi's broadcast method usually takes channelIds.
-            // If platform_name is 'onebot', channelId is usually the group number.
-            // We need to find the bot first or use ctx.broadcast.
-
-            // ctx.broadcast(channels, content)
-            // channels can be [`${platform}:${groupId}`]
-
-            const channelId = `${this.config.platform_name}:${groupId}`
+            // Default to onebot if no platform specified
+            const channelId = groupId.includes(':') ? groupId : `onebot:${groupId}`
             try {
                 await this.ctx.broadcast([channelId], message)
             } catch (e) {

@@ -1,7 +1,7 @@
 {
     "name": "koishi-plugin-disaster-warning",
     "description": "Koishi 灾害预警插件，支持多数据源（地震、海啸、气象预警）",
-    "version": "0.0.4",
+    "version": "0.0.5",
     "main": "lib/index.js",
     "typings": "lib/index.d.ts",
     "files": [
