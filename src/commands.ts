@@ -1,6 +1,7 @@
 import { Context, Logger, h } from 'koishi'
 import { Config } from './index'
 import { DisasterWarningService } from './service'
+import { DataSource, DisasterType } from './models'
 
 const logger = new Logger('disaster-commands')
 
@@ -11,38 +12,6 @@ export function applyCommands(ctx: Context, config: Config, service: DisasterWar
         .action(async ({ session }) => {
             if (!session) return
             await session.send('正在发送测试消息...')
-
-            const testEvent = {
-                id: 'test_event_' + Date.now(),
-                data: {
-                    id: 'test_id',
-                    event_id: 'test_event_id',
-                    source: 'Test Source',
-                    disaster_type: 'earthquake_warning',
-                    shock_time: new Date().toISOString(),
-                    latitude: 30.0,
-                    longitude: 120.0,
-                    depth: 10,
-                    magnitude: 5.0,
-                    intensity: 4.0,
-                    place_name: '测试地点',
-                    updates: 1,
-                    is_final: false,
-                    is_cancel: false,
-                    raw_data: {}
-                },
-                source: 'test' as any,
-                disaster_type: 'earthquake_warning' as any,
-                receive_time: new Date().toISOString(),
-                push_count: 0,
-                raw_data: {}
-            }
-
-            // We can use the service's pusher to format and send, 
-            // but pusher broadcasts to configured groups. 
-            // Here we might want to send to the current session.
-            // Let's manually format it using a simplified version or expose pusher's formatter.
-            // For simplicity, let's just send a text message here.
 
             const msg = [
                 '【测试消息】',

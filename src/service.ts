@@ -1,7 +1,7 @@
 import { Context, Logger } from 'koishi'
 import { Config } from './index'
 import { WebSocket } from 'ws'
-import { DisasterEvent } from './models'
+import { DisasterEvent, DataSource, DisasterType } from './models'
 import { FanStudioHandler, P2PHandler, WolfxHandler, GlobalQuakeHandler } from './handlers'
 import { MessagePushManager } from './pusher'
 
@@ -17,9 +17,10 @@ export class DisasterWarningService {
     private handlers: {
         fanStudio: FanStudioHandler,
         p2p: P2PHandler,
-        wolfx: WolfxHandler,
         globalQuake: GlobalQuakeHandler
     }
+
+    private wolfxHandlers: Record<string, WolfxHandler> = {}
 
     constructor(ctx: Context, config: Config) {
         this.ctx = ctx
@@ -28,15 +29,20 @@ export class DisasterWarningService {
         this.handlers = {
             fanStudio: new FanStudioHandler(),
             p2p: new P2PHandler(),
-            wolfx: new WolfxHandler('wolfx'),
             globalQuake: new GlobalQuakeHandler()
+        }
+
+        // Initialize Wolfx handlers
+        const wolfxKeys = ['jma_eew', 'cenc_eew', 'cwa_eew', 'jma_eqlist', 'cenc_eqlist']
+        for (const key of wolfxKeys) {
+            this.wolfxHandlers[key] = new WolfxHandler(`wolfx_${key}`)
         }
     }
 
     async start() {
         if (!this.config.enabled) return
         logger.info('Disaster Warning Service starting...')
-        this.connectAll()
+        this.connectBasedOnConfig()
     }
 
     async stop() {
@@ -49,25 +55,58 @@ export class DisasterWarningService {
         }
     }
 
-    private connectAll() {
-        const ds = this.config.data_sources
+    private connectBasedOnConfig() {
+        const { regions, data_types, source_priority } = this.config
 
-        // Fan Studio: Connect if any sub-option is enabled
-        if (Object.values(ds.fan_studio).some(v => v)) {
-            this.connectFanStudio()
+        // Determine which connections to make based on regions and source priority
+        const needsJapan = regions.japan
+        const needsChina = regions.china
+        const needsTaiwan = regions.taiwan
+        const needsGlobal = regions.global
+
+        // Connect to appropriate sources based on priority
+        if (source_priority === 'auto' || source_priority === 'wolfx') {
+            // Wolfx is best for real-time EEW
+            if (needsJapan && data_types.earthquake_warning) {
+                this.connectWolfxSource('jma_eew', 'wss://ws-api.wolfx.jp/jma_eew')
+            }
+            if (needsChina && data_types.earthquake_warning) {
+                this.connectWolfxSource('cenc_eew', 'wss://ws-api.wolfx.jp/cenc_eew')
+            }
+            if (needsTaiwan && data_types.earthquake_warning) {
+                this.connectWolfxSource('cwa_eew', 'wss://ws-api.wolfx.jp/cwa_eew')
+            }
+            if (needsJapan && data_types.earthquake_info) {
+                this.connectWolfxSource('jma_eqlist', 'wss://ws-api.wolfx.jp/jma_eqlist')
+            }
+            if (needsChina && data_types.earthquake_info) {
+                this.connectWolfxSource('cenc_eqlist', 'wss://ws-api.wolfx.jp/cenc_eqlist')
+            }
         }
 
-        // P2P: Connect if any sub-option is enabled
-        if (Object.values(ds.p2p_earthquake).some(v => v)) {
-            this.connectP2P()
+        if (source_priority === 'auto' || source_priority === 'p2p') {
+            // P2P is good for Japan data including tsunami
+            if (needsJapan) {
+                if (data_types.earthquake_warning || data_types.earthquake_info || data_types.tsunami_warning) {
+                    this.connectP2P()
+                }
+            }
         }
 
-        // Wolfx: Connect if any sub-option is enabled
-        if (Object.values(ds.wolfx).some(v => v)) {
-            this.connectWolfx()
+        if (source_priority === 'auto' || source_priority === 'fanstudio') {
+            // FAN Studio has Chinese weather and tsunami
+            const needsFanStudio =
+                (needsChina && data_types.weather_alarm) ||
+                (needsChina && data_types.tsunami_warning) ||
+                (needsGlobal && data_types.earthquake_info) // USGS via FanStudio
+
+            if (needsFanStudio) {
+                this.connectFanStudio()
+            }
         }
 
-        if (ds.global_quake.enabled) {
+        // Global Quake for global coverage
+        if (needsGlobal && data_types.earthquake_warning) {
             this.connectGlobalQuake()
         }
     }
@@ -115,51 +154,45 @@ export class DisasterWarningService {
     }
 
     private shouldPushEvent(event: DisasterEvent): boolean {
-        const ds = this.config.data_sources
-        switch (event.source) {
-            // Fan Studio
-            case 'fan_studio_cea' as any: // DataSource.FAN_STUDIO_CEA
-                return ds.fan_studio.china_earthquake_warning
-            case 'fan_studio_cwa' as any: // DataSource.FAN_STUDIO_CWA
-                return ds.fan_studio.taiwan_cwa_earthquake
-            case 'fan_studio_cenc' as any: // DataSource.FAN_STUDIO_CENC
-                return ds.fan_studio.china_cenc_earthquake
-            case 'fan_studio_jma' as any: // DataSource.FAN_STUDIO_JMA
-                return ds.fan_studio.japan_jma_eew
-            case 'fan_studio_usgs' as any: // DataSource.FAN_STUDIO_USGS
-                return ds.fan_studio.usgs_earthquake
-            case 'fan_studio_weather' as any: // DataSource.FAN_STUDIO_WEATHER
-                return ds.fan_studio.china_weather_alarm
-            case 'fan_studio_tsunami' as any: // DataSource.FAN_STUDIO_TSUNAMI
-                return ds.fan_studio.china_tsunami
+        const { data_types, regions } = this.config
 
-            // P2P
-            case 'p2p_eew' as any: // DataSource.P2P_EEW
-                return ds.p2p_earthquake.japan_jma_eew
-            case 'p2p_earthquake' as any: // DataSource.P2P_EARTHQUAKE
-                return ds.p2p_earthquake.japan_jma_earthquake
-            case 'p2p_tsunami' as any: // DataSource.P2P_TSUNAMI
-                return ds.p2p_earthquake.japan_jma_tsunami
+        // Check disaster type
+        const isEarthquakeWarning = event.disaster_type === DisasterType.EARTHQUAKE_WARNING
+        const isEarthquakeInfo = event.disaster_type === DisasterType.EARTHQUAKE
+        const isTsunami = event.disaster_type === DisasterType.TSUNAMI
+        const isWeather = event.disaster_type === DisasterType.WEATHER_ALARM
 
-            // Wolfx
-            case 'wolfx_jma_eew' as any: // DataSource.WOLFX_JMA_EEW
-                return ds.wolfx.japan_jma_eew
-            case 'wolfx_cenc_eew' as any: // DataSource.WOLFX_CENC_EEW
-                return ds.wolfx.china_cenc_eew
-            case 'wolfx_cwa_eew' as any: // DataSource.WOLFX_CWA_EEW
-                return ds.wolfx.taiwan_cwa_eew
-            case 'wolfx_jma_eq' as any: // DataSource.WOLFX_JMA_EQ
-                return ds.wolfx.japan_jma_earthquake
-            case 'wolfx_cenc_eq' as any: // DataSource.WOLFX_CENC_EQ
-                return ds.wolfx.china_cenc_earthquake
+        if (isEarthquakeWarning && !data_types.earthquake_warning) return false
+        if (isEarthquakeInfo && !data_types.earthquake_info) return false
+        if (isTsunami && !data_types.tsunami_warning) return false
+        if (isWeather && !data_types.weather_alarm) return false
 
-            // Global Quake
-            case 'global_quake' as any: // DataSource.GLOBAL_QUAKE
-                return ds.global_quake.enabled
+        // Check region based on data source
+        const source = event.source
+        const isJapanSource = [
+            DataSource.P2P_EEW, DataSource.P2P_EARTHQUAKE, DataSource.P2P_TSUNAMI,
+            DataSource.WOLFX_JMA_EEW, DataSource.WOLFX_JMA_EQ, DataSource.FAN_STUDIO_JMA
+        ].includes(source)
 
-            default:
-                return true
-        }
+        const isChinaSource = [
+            DataSource.FAN_STUDIO_CEA, DataSource.FAN_STUDIO_CENC, DataSource.FAN_STUDIO_WEATHER,
+            DataSource.FAN_STUDIO_TSUNAMI, DataSource.WOLFX_CENC_EEW, DataSource.WOLFX_CENC_EQ
+        ].includes(source)
+
+        const isTaiwanSource = [
+            DataSource.FAN_STUDIO_CWA, DataSource.WOLFX_CWA_EEW
+        ].includes(source)
+
+        const isGlobalSource = [
+            DataSource.FAN_STUDIO_USGS, DataSource.GLOBAL_QUAKE
+        ].includes(source)
+
+        if (isJapanSource && !regions.japan) return false
+        if (isChinaSource && !regions.china) return false
+        if (isTaiwanSource && !regions.taiwan) return false
+        if (isGlobalSource && !regions.global) return false
+
+        return true
     }
 
     private connectFanStudio() {
@@ -178,24 +211,12 @@ export class DisasterWarningService {
         })
     }
 
-    private connectWolfx() {
-        const wolfx_sources = {
-            "japan_jma_eew": "wss://ws-api.wolfx.jp/jma_eew",
-            "china_cenc_eew": "wss://ws-api.wolfx.jp/cenc_eew",
-            "taiwan_cwa_eew": "wss://ws-api.wolfx.jp/cwa_eew",
-            "japan_jma_earthquake": "wss://ws-api.wolfx.jp/jma_eqlist",
-            "china_cenc_earthquake": "wss://ws-api.wolfx.jp/cenc_eqlist",
-        }
-
-        for (const [key, url] of Object.entries(wolfx_sources)) {
-            if (this.config.data_sources.wolfx[key as keyof typeof this.config.data_sources.wolfx]) {
-                this.connectWebSocket(`wolfx_${key}`, url, (data) => {
-                    const handler = new WolfxHandler(`wolfx_${key}`)
-                    const event = handler.parseMessage(data)
-                    this.handleEvent(event)
-                })
-            }
-        }
+    private connectWolfxSource(key: string, url: string) {
+        const handler = this.wolfxHandlers[key]
+        this.connectWebSocket(`wolfx_${key}`, url, (data) => {
+            const event = handler.parseMessage(data)
+            this.handleEvent(event)
+        })
     }
 
     private connectGlobalQuake() {

@@ -13,12 +13,38 @@ export class WolfxHandler extends BaseDataHandler {
                 return this.parseJMAEEW(data)
             } else if (type === 'cenc_eew') {
                 return this.parseCENCEEW(data)
+            } else if (type === 'cwa_eew') {
+                return this.parseCWAEEW(data)
             } else if (type === 'jma_eqlist') {
                 return this.parseJMAEqList(data)
             } else if (type === 'cenc_eqlist') {
-                // TODO: Implement CENC EqList
-                return null
+                return this.parseCENCEqList(data)
             }
+
+            // If no type field, try to detect from data structure
+            if (data.EventID && data.OriginTime) {
+                // Likely EEW data
+                if (data.Hypocenter && data.Hypocenter.includes('日本')) {
+                    return this.parseJMAEEW(data)
+                } else if (data.HypoCenter) {
+                    return this.parseCENCEEW(data)
+                }
+            }
+
+            // Check for eqlist structure
+            if (data.No1 || Object.keys(data).some(k => k.startsWith('No'))) {
+                // Detect based on location content
+                const firstKey = Object.keys(data).find(k => k.startsWith('No'))
+                if (firstKey && data[firstKey]) {
+                    const loc = data[firstKey].location || ''
+                    if (loc.includes('中国') || loc.includes('省') || loc.includes('市')) {
+                        return this.parseCENCEqList(data)
+                    } else {
+                        return this.parseJMAEqList(data)
+                    }
+                }
+            }
+
             return null
         } catch (e) {
             this.logger.error(`[${this.sourceId}] Error parsing message:`, e)
@@ -87,9 +113,38 @@ export class WolfxHandler extends BaseDataHandler {
         }
     }
 
+    private parseCWAEEW(data: any): DisasterEvent {
+        const earthquake: EarthquakeData = {
+            id: data.EventID || data.ID || '',
+            event_id: data.EventID || '',
+            source: DataSource.WOLFX_CWA_EEW,
+            disaster_type: DisasterType.EARTHQUAKE_WARNING,
+            shock_time: this.parseDateTime(data.OriginTime) || new Date().toISOString(),
+            latitude: Number(data.Latitude) || 0,
+            longitude: Number(data.Longitude) || 0,
+            depth: Number(data.Depth),
+            magnitude: Number(data.Magnitude),
+            intensity: Number(data.MaxIntensity),
+            place_name: data.HypoCenter || data.Location || '台湾',
+            updates: Number(data.ReportNum) || 1,
+            is_final: data.isFinal || false,
+            is_cancel: false,
+            raw_data: data
+        }
+
+        return {
+            id: earthquake.id,
+            data: earthquake,
+            source: DataSource.WOLFX_CWA_EEW,
+            disaster_type: DisasterType.EARTHQUAKE_WARNING,
+            receive_time: new Date().toISOString(),
+            push_count: 0,
+            raw_data: data
+        }
+    }
+
     private parseJMAEqList(data: any): DisasterEvent | null {
-        // Find the latest earthquake (usually No1 or similar key, or we iterate)
-        // The original code iterated and found the one with 'No' prefix
+        // Find the latest earthquake (usually No1 or similar key)
         let eqInfo: any = null
         for (const key in data) {
             if (key.startsWith('No') && typeof data[key] === 'object') {
@@ -127,6 +182,51 @@ export class WolfxHandler extends BaseDataHandler {
             id: earthquake.id,
             data: earthquake,
             source: DataSource.WOLFX_JMA_EQ,
+            disaster_type: DisasterType.EARTHQUAKE,
+            receive_time: new Date().toISOString(),
+            push_count: 0,
+            raw_data: data
+        }
+    }
+
+    private parseCENCEqList(data: any): DisasterEvent | null {
+        // Find the latest earthquake
+        let eqInfo: any = null
+        for (const key in data) {
+            if (key.startsWith('No') && typeof data[key] === 'object') {
+                eqInfo = data[key]
+                break
+            }
+        }
+
+        if (!eqInfo) return null
+
+        let depth = Number(eqInfo.depth)
+        if (isNaN(depth) && typeof eqInfo.depth === 'string') {
+            depth = Number(eqInfo.depth.replace(/[^0-9.]/g, ''))
+        }
+
+        const earthquake: EarthquakeData = {
+            id: eqInfo.md5 || eqInfo.id || '',
+            event_id: eqInfo.md5 || eqInfo.id || '',
+            source: DataSource.WOLFX_CENC_EQ,
+            disaster_type: DisasterType.EARTHQUAKE,
+            shock_time: this.parseDateTime(eqInfo.time) || new Date().toISOString(),
+            latitude: Number(eqInfo.latitude) || 0,
+            longitude: Number(eqInfo.longitude) || 0,
+            depth: depth || 0,
+            magnitude: Number(eqInfo.magnitude),
+            place_name: eqInfo.location || '',
+            updates: 1,
+            is_final: true,
+            is_cancel: false,
+            raw_data: data
+        }
+
+        return {
+            id: earthquake.id,
+            data: earthquake,
+            source: DataSource.WOLFX_CENC_EQ,
             disaster_type: DisasterType.EARTHQUAKE,
             receive_time: new Date().toISOString(),
             push_count: 0,

@@ -1,19 +1,30 @@
 {
     "name": "koishi-plugin-disaster-warning",
+    "version": "0.0.8",
     "description": "Koishi 灾害预警插件，支持多数据源（地震、海啸、气象预警）",
-    "version": "0.0.7",
+    "contributors": [
+        "lumia.wang <fenglian19980510@gmail.com>"
+    ],
     "main": "lib/index.js",
     "typings": "lib/index.d.ts",
     "files": [
         "lib",
         "dist"
     ],
+    "homepage": "https://github.com/lumia1998/koishi-plugin-disaster-warning",
+    "bugs": {
+        "url": "https://github.com/lumia1998/koishi-plugin-disaster-warning/issues"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/lumia1998/koishi-plugin-disaster-warning.git"
+    },
     "license": "AGPL-3.0",
     "scripts": {
-        "build": "tsc",
-        "lint": "eslint src --ext .ts"
+        "build": "tsc"
     },
     "keywords": [
+        "chatbot",
         "koishi",
         "plugin",
         "disaster",
@@ -23,14 +34,12 @@
     "peerDependencies": {
         "koishi": "^4.18.0"
     },
-    "dependencies": {
-        "ws": "^8.18.0"
-    },
     "devDependencies": {
         "@types/node": "^20.0.0",
         "@types/ws": "^8.5.10",
         "koishi": "^4.18.0",
-        "typescript": "^5.0.0"
+        "typescript": "^5.0.0",
+        "ws": "^8.18.0"
     },
     "koishi": {
         "description": {

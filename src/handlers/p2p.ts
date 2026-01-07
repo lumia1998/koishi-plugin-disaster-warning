@@ -31,8 +31,30 @@ export class P2PHandler extends BaseDataHandler {
 
         if (data.cancelled) {
             this.logger.info(`[${this.sourceId}] EEW Cancelled`)
-            // We might want to handle cancellation
-            return null
+            // Return a cancelled event so it can be broadcasted
+            const earthquake: EarthquakeData = {
+                id: data.id || '',
+                event_id: issueInfo.eventId || data.id || '',
+                source: DataSource.P2P_EEW,
+                disaster_type: DisasterType.EARTHQUAKE_WARNING,
+                shock_time: new Date().toISOString(),
+                latitude: 0,
+                longitude: 0,
+                place_name: '取消',
+                updates: 1,
+                is_final: true,
+                is_cancel: true,
+                raw_data: data
+            }
+            return {
+                id: earthquake.id,
+                data: earthquake,
+                source: DataSource.P2P_EEW,
+                disaster_type: DisasterType.EARTHQUAKE_WARNING,
+                receive_time: new Date().toISOString(),
+                push_count: 0,
+                raw_data: data
+            }
         }
 
         let maxScale = -1
@@ -63,7 +85,7 @@ export class P2PHandler extends BaseDataHandler {
             is_cancel: data.cancelled || false,
             is_training: data.test || false,
             serial: issueInfo.serial,
-            updates: 1, // P2P doesn't explicitly send update count in the same way, but serial might be it
+            updates: 1,
             raw_data: data
         }
 
@@ -92,7 +114,7 @@ export class P2PHandler extends BaseDataHandler {
         const scale = maxScale !== -1 ? this.convertP2PScale(maxScale) : undefined
 
         let depth = Number(hypocenter.depth)
-        if (isNaN(depth)) depth = 0 // Or undefined
+        if (isNaN(depth)) depth = 0
 
         const earthquake: EarthquakeData = {
             id: data.id || '',
@@ -127,9 +149,62 @@ export class P2PHandler extends BaseDataHandler {
     }
 
     private parseTsunami(data: any): DisasterEvent | null {
-        // TODO: Implement Tsunami parsing if needed
-        // For now return null or basic implementation
-        return null
+        // P2P Tsunami format (code 552)
+        // Reference: https://www.p2pquake.net/json_api_v2/
+        const issueInfo = data.issue || {}
+        const areas = data.areas || []
+
+        // Determine tsunami level from areas
+        let maxGrade = ''
+        const gradeOrder = ['Warning', 'Watch', 'Advisory', 'Unknown']
+
+        for (const area of areas) {
+            const grade = area.grade || ''
+            if (!maxGrade || gradeOrder.indexOf(grade) < gradeOrder.indexOf(maxGrade)) {
+                maxGrade = grade
+            }
+        }
+
+        // Map grade to Chinese
+        const gradeMap: Record<string, string> = {
+            'MajorWarning': '大津波警报',
+            'Warning': '津波警报',
+            'Watch': '津波注意报',
+            'Advisory': '津波予报',
+            'Unknown': '未知'
+        }
+
+        const forecasts = areas.map((a: any) => ({
+            name: a.name || '',
+            grade: gradeMap[a.grade] || a.grade || '',
+            immediate: a.immediate || false,
+            firstHeight: a.firstHeight,
+            maxHeight: a.maxHeight
+        }))
+
+        const tsunami: TsunamiData = {
+            id: data.id || `tsunami_${Date.now()}`,
+            code: String(data.code),
+            source: DataSource.P2P_TSUNAMI,
+            title: issueInfo.type === 'Focus' ? '津波情報（各地の満潮時刻・津波到達予想時刻）' : '津波予報',
+            level: gradeMap[maxGrade] || maxGrade || 'Unknown',
+            disaster_type: DisasterType.TSUNAMI,
+            org_unit: '気象庁',
+            issue_time: this.parseDateTime(issueInfo.time),
+            forecasts: forecasts,
+            monitoring_stations: [],
+            raw_data: data
+        }
+
+        return {
+            id: tsunami.id,
+            data: tsunami,
+            source: DataSource.P2P_TSUNAMI,
+            disaster_type: DisasterType.TSUNAMI,
+            receive_time: new Date().toISOString(),
+            push_count: 0,
+            raw_data: data
+        }
     }
 
     private convertP2PScale(scale: number): number | undefined {

@@ -1,4 +1,4 @@
-import { Context, Schema, Logger, Service } from 'koishi'
+import { Context, Schema, Logger } from 'koishi'
 import { DisasterWarningService } from './service'
 import { applyCommands } from './commands'
 
@@ -11,95 +11,51 @@ export const inject = {
 export interface Config {
     enabled: boolean
     target_groups: string[]
-    data_sources: {
-        fan_studio: {
-            china_earthquake_warning: boolean
-            taiwan_cwa_earthquake: boolean
-            china_cenc_earthquake: boolean
-            japan_jma_eew: boolean
-            usgs_earthquake: boolean
-            china_weather_alarm: boolean
-            china_tsunami: boolean
-        }
-        p2p_earthquake: {
-            japan_jma_eew: boolean
-            japan_jma_earthquake: boolean
-            japan_jma_tsunami: boolean
-        }
-        wolfx: {
-            japan_jma_eew: boolean
-            china_cenc_eew: boolean
-            taiwan_cwa_eew: boolean
-            japan_jma_earthquake: boolean
-            china_cenc_earthquake: boolean
-        }
-        global_quake: {
-            enabled: boolean
-        }
+
+    // 数据类型
+    data_types: {
+        earthquake_warning: boolean  // 地震预警（实时速报）
+        earthquake_info: boolean     // 地震信息（震后报告）
+        tsunami_warning: boolean     // 海啸预警
+        weather_alarm: boolean       // 气象预警
     }
-    earthquake_filters: {
-        intensity_filter: {
-            enabled: boolean
-            min_magnitude: number
-            min_intensity: number
-        }
-        scale_filter: {
-            enabled: boolean
-            min_magnitude: number
-            min_scale: number
-        }
-        magnitude_only_filter: {
-            enabled: boolean
-            min_magnitude: number
-        }
+
+    // 地区过滤
+    regions: {
+        china: boolean      // 中国大陆
+        taiwan: boolean     // 台湾
+        japan: boolean      // 日本
+        global: boolean     // 全球（USGS/GlobalQuake）
     }
+
+    // 数据源优先级
+    source_priority: 'auto' | 'wolfx' | 'fanstudio' | 'p2p'
 }
 
 export const Config: Schema<Config> = Schema.object({
     enabled: Schema.boolean().default(true).description('启用灾害预警插件'),
-    target_groups: Schema.array(Schema.string()).default([]).description('需要推送消息的群号列表'),
-    data_sources: Schema.object({
-        fan_studio: Schema.object({
-            china_earthquake_warning: Schema.boolean().default(true).description('中国地震网地震预警'),
-            taiwan_cwa_earthquake: Schema.boolean().default(true).description('台湾中央气象署：强震即时警报'),
-            china_cenc_earthquake: Schema.boolean().default(false).description('中国地震台网（CENC）：地震测定'),
-            japan_jma_eew: Schema.boolean().default(false).description('日本气象厅（JMA）：紧急地震速报'),
-            usgs_earthquake: Schema.boolean().default(false).description('美国地质调查局（USGS）：地震测定'),
-            china_weather_alarm: Schema.boolean().default(false).description('中国气象局：气象预警'),
-            china_tsunami: Schema.boolean().default(false).description('自然资源部海啸预警中心：海啸预警信息'),
-        }).description('FAN Studio WebSocket 数据源'),
-        p2p_earthquake: Schema.object({
-            japan_jma_eew: Schema.boolean().default(true).description('日本気象庁：緊急地震速報'),
-            japan_jma_earthquake: Schema.boolean().default(true).description('日本気象庁（JMA）：地震情報'),
-            japan_jma_tsunami: Schema.boolean().default(true).description('日本気象庁：津波予報'),
-        }).description('P2P地震情報 WebSocket 数据源'),
-        wolfx: Schema.object({
-            japan_jma_eew: Schema.boolean().default(true).description('日本気象庁：緊急地震速報'),
-            china_cenc_eew: Schema.boolean().default(true).description('中国地震台网（CENC）：地震预警'),
-            taiwan_cwa_eew: Schema.boolean().default(true).description('台湾中央气象署：地震预警'),
-            japan_jma_earthquake: Schema.boolean().default(true).description('日本気象庁（JMA）：地震情報'),
-            china_cenc_earthquake: Schema.boolean().default(true).description('中国地震台网（CENC）：地震测定'),
-        }).description('Wolfx API 数据源'),
-        global_quake: Schema.object({
-            enabled: Schema.boolean().default(false).description('启用Global Quake数据源'),
-        }).description('Global Quake 服务器推送'),
-    }).description('数据源配置'),
-    earthquake_filters: Schema.object({
-        intensity_filter: Schema.object({
-            enabled: Schema.boolean().default(true).description('启用烈度过滤器'),
-            min_magnitude: Schema.number().default(2.0).description('最小震级'),
-            min_intensity: Schema.number().default(4.0).description('最小烈度'),
-        }).description('基于震级和烈度的地震过滤器'),
-        scale_filter: Schema.object({
-            enabled: Schema.boolean().default(true).description('启用震度过滤器'),
-            min_magnitude: Schema.number().default(2.0).description('最小震级'),
-            min_scale: Schema.number().default(1.0).description('最小震度'),
-        }).description('基于震级和震度的地震过滤器'),
-        magnitude_only_filter: Schema.object({
-            enabled: Schema.boolean().default(true).description('启用仅震级过滤器'),
-            min_magnitude: Schema.number().default(4.5).description('最小震级'),
-        }).description('USGS震级过滤器'),
-    }).description('地震信息过滤器配置'),
+    target_groups: Schema.array(Schema.string()).default([]).description('推送目标群号列表，格式: 平台:群号（如 onebot:123456）'),
+
+    data_types: Schema.object({
+        earthquake_warning: Schema.boolean().default(true).description('地震预警（实时速报，震前预警）'),
+        earthquake_info: Schema.boolean().default(true).description('地震信息（震后测定报告）'),
+        tsunami_warning: Schema.boolean().default(true).description('海啸预警'),
+        weather_alarm: Schema.boolean().default(false).description('气象预警（中国）'),
+    }).description('接收的灾害类型'),
+
+    regions: Schema.object({
+        china: Schema.boolean().default(true).description('中国大陆'),
+        taiwan: Schema.boolean().default(true).description('台湾'),
+        japan: Schema.boolean().default(true).description('日本'),
+        global: Schema.boolean().default(false).description('全球（USGS/GlobalQuake）'),
+    }).description('接收的地区'),
+
+    source_priority: Schema.union([
+        Schema.const('auto').description('自动选择最佳数据源'),
+        Schema.const('wolfx').description('优先使用 Wolfx API'),
+        Schema.const('fanstudio').description('优先使用 FAN Studio'),
+        Schema.const('p2p').description('优先使用 P2P地震情報'),
+    ]).default('auto').description('数据源优先级'),
 })
 
 export function apply(ctx: Context, config: Config) {
