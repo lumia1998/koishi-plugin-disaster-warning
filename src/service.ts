@@ -13,6 +13,7 @@ export class DisasterWarningService {
     private reconnectTimers: Record<string, NodeJS.Timeout> = {}
     private pusher: MessagePushManager
     private ctx: Context
+    private stopped: boolean = false  // Flag to prevent reconnection after stop
 
     private handlers: {
         fanStudio: FanStudioHandler,
@@ -41,18 +42,31 @@ export class DisasterWarningService {
 
     async start() {
         if (!this.config.enabled) return
+        this.stopped = false  // Reset stopped flag on start
         logger.info('Disaster Warning Service starting...')
         this.connectBasedOnConfig()
     }
 
     async stop() {
         logger.info('Disaster Warning Service stopping...')
-        for (const key in this.connections) {
-            this.connections[key].close()
-        }
+        this.stopped = true  // Set stopped flag to prevent reconnection
+
+        // Clear all reconnect timers first
         for (const key in this.reconnectTimers) {
             clearTimeout(this.reconnectTimers[key])
+            delete this.reconnectTimers[key]
         }
+
+        // Close all connections
+        for (const key in this.connections) {
+            const ws = this.connections[key]
+            // Remove listeners to prevent reconnection attempts
+            ws.removeAllListeners('close')
+            ws.close()
+            delete this.connections[key]
+        }
+
+        logger.info('Disaster Warning Service stopped.')
     }
 
     private connectBasedOnConfig() {
@@ -112,7 +126,11 @@ export class DisasterWarningService {
     }
 
     private connectWebSocket(name: string, url: string, onMessage: (data: any) => void) {
+        // Don't connect if service is stopped
+        if (this.stopped) return
+
         if (this.connections[name]) {
+            this.connections[name].removeAllListeners('close')
             this.connections[name].close()
         }
 
@@ -133,11 +151,14 @@ export class DisasterWarningService {
         })
 
         ws.on('close', () => {
-            logger.warn(`Disconnected from ${name}, reconnecting in 10s...`)
-            delete this.connections[name]
-            this.reconnectTimers[name] = setTimeout(() => {
-                this.connectWebSocket(name, url, onMessage)
-            }, 10000)
+            // Only reconnect if service is not stopped
+            if (!this.stopped) {
+                logger.warn(`Disconnected from ${name}, reconnecting in 10s...`)
+                delete this.connections[name]
+                this.reconnectTimers[name] = setTimeout(() => {
+                    this.connectWebSocket(name, url, onMessage)
+                }, 10000)
+            }
         })
 
         ws.on('error', (err) => {
