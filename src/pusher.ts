@@ -4,69 +4,54 @@ import { DisasterEvent, DisasterType, EarthquakeData, TsunamiData, WeatherAlarmD
 
 const logger = new Logger('disaster-pusher')
 
-// Hardcoded filter thresholds - no user configuration needed
-const FILTER_THRESHOLDS = {
-    MIN_MAGNITUDE_ABSOLUTE: 3.0,      // Always ignore earthquakes below M3.0
-    MIN_MAGNITUDE_FOR_PUSH: 4.0,      // Push if magnitude >= 4.0
-    MIN_INTENSITY_FOR_PUSH: 4.0,      // Or push if intensity >= 4.0 (China)
-    MIN_SCALE_FOR_PUSH: 4.0,          // Or push if shindo scale >= 4 (Japan)
-}
-
 export class MessagePushManager {
     constructor(private ctx: Context, private config: Config) { }
 
     async pushEvent(event: DisasterEvent) {
         if (this.shouldFilter(event)) {
-            logger.debug(`Event ${event.id} filtered.`)
+            logger.debug(`Event ${event.id} filtered by threshold.`)
             return
         }
 
         const message = this.formatMessage(event)
         if (!message) return
 
-        logger.info(`Pushing event ${event.id} to ${this.config.target_groups.length} groups.`)
+        logger.info(`Pushing event ${event.id} to ${this.config.target_groups.length} group(s).`)
         await this.broadcast(message)
     }
 
+    // ---- 过滤逻辑 --------------------------------------------------------
+
     private shouldFilter(event: DisasterEvent): boolean {
-        // Only filter earthquake events
         if (event.disaster_type !== DisasterType.EARTHQUAKE && event.disaster_type !== DisasterType.EARTHQUAKE_WARNING) {
-            return false // Don't filter tsunami/weather
+            return false
         }
 
         const data = event.data as EarthquakeData
-        const { MIN_MAGNITUDE_ABSOLUTE, MIN_MAGNITUDE_FOR_PUSH, MIN_INTENSITY_FOR_PUSH, MIN_SCALE_FOR_PUSH } = FILTER_THRESHOLDS
+        const {
+            min_magnitude_absolute,
+            min_magnitude_for_push,
+            min_intensity_for_push,
+            min_scale_for_push
+        } = this.config.filter
 
-        // Always filter out very small earthquakes
-        if (data.magnitude !== undefined && data.magnitude < MIN_MAGNITUDE_ABSOLUTE) {
+        if (data.magnitude !== undefined && data.magnitude < min_magnitude_absolute) return true
+        if (data.magnitude !== undefined && data.magnitude >= min_magnitude_for_push) return false
+        if (data.intensity !== undefined && data.intensity >= min_intensity_for_push) return false
+        if (data.scale !== undefined && data.scale >= min_scale_for_push) return false
+
+        // M 在 [min_magnitude_absolute, min_magnitude_for_push) 且无显著烈度/震度 → 过滤
+        if (data.magnitude !== undefined &&
+            data.magnitude >= min_magnitude_absolute &&
+            data.magnitude < min_magnitude_for_push &&
+            data.intensity === undefined && data.scale === undefined) {
             return true
-        }
-
-        // Pass if magnitude is significant
-        if (data.magnitude !== undefined && data.magnitude >= MIN_MAGNITUDE_FOR_PUSH) {
-            return false
-        }
-
-        // Pass if intensity is significant (Chinese sources)
-        if (data.intensity !== undefined && data.intensity >= MIN_INTENSITY_FOR_PUSH) {
-            return false
-        }
-
-        // Pass if scale is significant (Japanese sources)
-        if (data.scale !== undefined && data.scale >= MIN_SCALE_FOR_PUSH) {
-            return false
-        }
-
-        // If magnitude is between 3.0-4.0 and no significant intensity/scale, filter out
-        if (data.magnitude !== undefined && data.magnitude >= MIN_MAGNITUDE_ABSOLUTE && data.magnitude < MIN_MAGNITUDE_FOR_PUSH) {
-            // Only filter if we don't have intensity/scale data that would make it significant
-            if (data.intensity === undefined && data.scale === undefined) {
-                return true
-            }
         }
 
         return false
     }
+
+    // ---- 格式化 ----------------------------------------------------------
 
     private formatMessage(event: DisasterEvent): string | h[] {
         switch (event.disaster_type) {
@@ -92,14 +77,8 @@ export class MessagePushManager {
         msg += `🕐 时间：${this.formatTime(data.shock_time)}\n`
         msg += `📊 震级：M${data.magnitude?.toFixed(1) || '未知'}\n`
         msg += `📏 深度：${data.depth !== undefined ? data.depth + 'km' : '未知'}\n`
-
-        if (data.intensity !== undefined) {
-            msg += `🔥 最大烈度：${data.intensity.toFixed(1)}\n`
-        }
-        if (data.scale !== undefined) {
-            msg += `🎚️ 最大震度：${this.formatScale(data.scale)}\n`
-        }
-
+        if (data.intensity !== undefined) msg += `🔥 最大烈度：${data.intensity.toFixed(1)}\n`
+        if (data.scale !== undefined) msg += `🎚️ 最大震度：${this.formatScale(data.scale)}\n`
         msg += `📡 数据源：${this.formatSource(data.source)}`
         return msg
     }
@@ -108,7 +87,7 @@ export class MessagePushManager {
         let msg = `🌊 【海啸预警】${data.title}\n`
         msg += `⚠️ 级别：${data.level}\n`
         msg += `🏛️ 发布单位：${data.org_unit}\n`
-        if (data.forecasts && data.forecasts.length > 0) {
+        if (data.forecasts?.length) {
             msg += `📍 预报区域：\n`
             data.forecasts.slice(0, 5).forEach((f: any) => {
                 msg += `  • ${f.name || f.areaName}: ${f.grade || f.level}\n`
@@ -126,6 +105,8 @@ export class MessagePushManager {
         return msg
     }
 
+    // ---- 工具 ------------------------------------------------------------
+
     private formatTime(isoStr: string): string {
         try {
             return new Date(isoStr).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
@@ -135,15 +116,15 @@ export class MessagePushManager {
     }
 
     private formatScale(scale: number): string {
-        const scaleMap: Record<number, string> = {
+        const map: Record<number, string> = {
             1.0: '1', 2.0: '2', 3.0: '3', 4.0: '4',
             4.5: '5弱', 5.0: '5强', 5.5: '6弱', 6.0: '6强', 7.0: '7'
         }
-        return scaleMap[scale] || scale.toString()
+        return map[scale] ?? scale.toString()
     }
 
     private formatSource(source: string): string {
-        const sourceMap: Record<string, string> = {
+        const map: Record<string, string> = {
             'fan_studio_cea': '中国地震预警网',
             'fan_studio_cwa': '台湾中央气象署',
             'fan_studio_cenc': '中国地震台网',
@@ -161,16 +142,35 @@ export class MessagePushManager {
             'wolfx_cenc_eq': 'Wolfx-CENC',
             'global_quake': 'GlobalQuake'
         }
-        return sourceMap[source] || source
+        return map[source] ?? source
     }
 
+    // ---- 推送 ------------------------------------------------------------
+
+    /**
+     * 直接向每个群号广播。
+     * target_groups 里存的是纯群号（如 "123456789"），
+     * 通过 ctx.bots 遍历所有在线 Bot 发送，这样无需硬编码平台前缀。
+     */
     private async broadcast(message: string | h[]) {
-        for (const groupId of this.config.target_groups) {
-            const channelId = groupId.includes(':') ? groupId : `onebot:${groupId}`
-            try {
-                await this.ctx.broadcast([channelId], message)
-            } catch (e) {
-                logger.error(`Failed to send to ${channelId}:`, e)
+        if (!this.config.target_groups.length) return
+
+        for (const gid of this.config.target_groups) {
+            const groupId = String(gid).trim()
+            if (!groupId) continue
+
+            let sent = false
+            for (const bot of this.ctx.bots) {
+                try {
+                    await bot.sendMessage(groupId, message)
+                    sent = true
+                    break   // 同一群由第一个能发送的 bot 处理即可
+                } catch {
+                    // 该 bot 不在此群，继续尝试下一个
+                }
+            }
+            if (!sent) {
+                logger.warn(`Could not send to group ${groupId}: no available bot.`)
             }
         }
     }

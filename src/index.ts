@@ -1,4 +1,4 @@
-import { Context, Schema, Logger } from 'koishi'
+import { Context, Schema } from 'koishi'
 import { DisasterWarningService } from './service'
 import { applyCommands } from './commands'
 
@@ -14,27 +14,43 @@ export interface Config {
 
     // 数据类型
     data_types: {
-        earthquake_warning: boolean  // 地震预警（实时速报）
-        earthquake_info: boolean     // 地震信息（震后报告）
-        tsunami_warning: boolean     // 海啸预警
-        weather_alarm: boolean       // 气象预警
+        earthquake_warning: boolean
+        earthquake_info: boolean
+        tsunami_warning: boolean
+        weather_alarm: boolean
     }
 
     // 地区过滤
     regions: {
-        china: boolean      // 中国大陆
-        taiwan: boolean     // 台湾
-        japan: boolean      // 日本
-        global: boolean     // 全球（USGS/GlobalQuake）
+        china: boolean
+        taiwan: boolean
+        japan: boolean
+        global: boolean
     }
 
-    // 数据源优先级
-    source_priority: 'auto' | 'wolfx' | 'fanstudio' | 'p2p'
+    // 各数据源独立开关（替换原 source_priority）
+    data_sources: {
+        fan_studio: boolean
+        wolfx: boolean
+        p2p: boolean
+        global_quake: boolean
+    }
+
+    // 过滤阈值
+    filter: {
+        min_magnitude_absolute: number
+        min_magnitude_for_push: number
+        min_intensity_for_push: number
+        min_scale_for_push: number
+    }
 }
 
 export const Config: Schema<Config> = Schema.object({
     enabled: Schema.boolean().default(true).description('启用灾害预警插件'),
-    target_groups: Schema.array(Schema.string()).default([]).description('推送目标群号列表，格式: 平台:群号（如 onebot:123456）'),
+
+    target_groups: Schema.array(Schema.string())
+        .default([])
+        .description('推送目标群号列表，直接填写群号即可，例如 123456789'),
 
     data_types: Schema.object({
         earthquake_warning: Schema.boolean().default(true).description('地震预警（实时速报，震前预警）'),
@@ -47,15 +63,22 @@ export const Config: Schema<Config> = Schema.object({
         china: Schema.boolean().default(true).description('中国大陆'),
         taiwan: Schema.boolean().default(true).description('台湾'),
         japan: Schema.boolean().default(true).description('日本'),
-        global: Schema.boolean().default(false).description('全球（USGS/GlobalQuake）'),
+        global: Schema.boolean().default(false).description('全球（USGS / GlobalQuake）'),
     }).description('接收的地区'),
 
-    source_priority: Schema.union([
-        Schema.const('auto').description('自动选择最佳数据源'),
-        Schema.const('wolfx').description('优先使用 Wolfx API'),
-        Schema.const('fanstudio').description('优先使用 FAN Studio'),
-        Schema.const('p2p').description('优先使用 P2P地震情報'),
-    ]).default('auto').description('数据源优先级'),
+    data_sources: Schema.object({
+        fan_studio: Schema.boolean().default(true).description('FAN Studio（中国预警/台湾/USGS/日本/气象/海啸）'),
+        wolfx: Schema.boolean().default(true).description('Wolfx（中国/台湾/日本 EEW，以及中国/日本地震列表）'),
+        p2p: Schema.boolean().default(true).description('P2P地震情報（日本 EEW / 地震情报 / 海啸）'),
+        global_quake: Schema.boolean().default(false).description('GlobalQuake（全球实时地震，流量较大）'),
+    }).description('数据源开关（可单独禁用某个来源）'),
+
+    filter: Schema.object({
+        min_magnitude_absolute: Schema.number().default(3.0).description('绝对过滤震级：低于此震级直接丢弃（不推送）'),
+        min_magnitude_for_push: Schema.number().default(4.0).description('推送震级门槛：震级达到此值则推送'),
+        min_intensity_for_push: Schema.number().default(4.0).description('推送烈度门槛（中国）：最大烈度达到此值则推送'),
+        min_scale_for_push: Schema.number().default(4.0).description('推送震度门槛（日本）：最大震度达到此值则推送（4 = 震度4）'),
+    }).description('过滤阈值（地震类事件，海啸/气象不受此限制）'),
 })
 
 export function apply(ctx: Context, config: Config) {

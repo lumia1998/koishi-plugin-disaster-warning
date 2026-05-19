@@ -2,8 +2,35 @@ import { BaseDataHandler } from './base'
 import { DisasterEvent, DataSource, DisasterType, EarthquakeData } from '../models'
 
 export class WolfxHandler extends BaseDataHandler {
+    // HTTP 轮询缓存（用于 commands history 复用，避免重复请求）
+    private eqListCache: { cenc: Record<string, any>; jma: Record<string, any> } = { cenc: {}, jma: {} }
+
     constructor(sourceId: string) {
         super(sourceId)
+    }
+
+    getEqListCache(): { cenc: Record<string, any>; jma: Record<string, any> } {
+        return this.eqListCache
+    }
+
+    /**
+     * 解析 Wolfx HTTP eqlist JSON（cenc 或 jma），
+     * 提取最新一条记录作为 DisasterEvent 推送。
+     */
+    parseEqList(data: any, type: 'cenc' | 'jma'): DisasterEvent | null {
+        try {
+            // 更新缓存
+            this.eqListCache[type] = data
+
+            // 提取 No1（最新一条）
+            const eqInfo = data['No1']
+            if (!eqInfo || typeof eqInfo !== 'object') return null
+
+            return type === 'cenc' ? this.parseCENCEqList(data) : this.parseJMAEqList(data)
+        } catch (e) {
+            this.logger.error(`[${this.sourceId}] parseEqList error:`, e)
+            return null
+        }
     }
 
     parseMessage(data: any): DisasterEvent | null {
