@@ -263,12 +263,13 @@ export class WolfxHandler extends BaseDataHandler {
 
     private parseJMAScale(scaleStr: string): number | undefined {
         if (!scaleStr) return undefined
+        // JMA 震度映射：5弱→4.5, 5強→5.0, 6弱→5.5, 6強→6.0
         const match = scaleStr.match(/(\d+)(弱|強)?/)
         if (match) {
             const base = parseInt(match[1])
             const suffix = match[2]
             if (suffix === '弱') return base - 0.5
-            if (suffix === '強') return base + 0.5
+            if (suffix === '強') return base          // 5強=5.0, 6強=6.0
             return base
         }
         return undefined

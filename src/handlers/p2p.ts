@@ -208,9 +208,10 @@ export class P2PHandler extends BaseDataHandler {
     }
 
     private convertP2PScale(scale: number): number | undefined {
+        // 46 = "5弱以上（暫定）"，显示同 5弱（4.5）
         const mapping: Record<number, number> = {
             10: 1.0, 20: 2.0, 30: 3.0, 40: 4.0,
-            45: 4.5, 46: 4.6, 50: 5.0, 55: 5.5,
+            45: 4.5, 46: 4.5, 50: 5.0, 55: 5.5,
             60: 6.0, 70: 7.0
         }
         return mapping[scale]

@@ -69,10 +69,10 @@ export class MessagePushManager {
 
     private formatEarthquake(data: EarthquakeData): string {
         const type = data.disaster_type === DisasterType.EARTHQUAKE_WARNING ? '🚨 地震预警' : '📋 地震信息'
-        const finalStr = data.is_final ? '【最终报】' : `【第${data.updates}报】`
+        const finalStr = data.is_final ? ' 【最终报】' : ''
         const cancelStr = data.is_cancel ? '【已取消】' : ''
 
-        let msg = `${cancelStr}${type} ${finalStr}\n`
+        let msg = `${cancelStr}${type}${finalStr}\n`
         msg += `📍 震源：${data.place_name}\n`
         msg += `🕐 时间：${this.formatTime(data.shock_time)}\n`
         msg += `📊 震级：M${data.magnitude?.toFixed(1) || '未知'}\n`

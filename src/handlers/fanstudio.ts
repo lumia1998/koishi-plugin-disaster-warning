@@ -1,6 +1,28 @@
 import { BaseDataHandler } from './base'
 import { DisasterEvent, DataSource, DisasterType, EarthquakeData, TsunamiData, WeatherAlarmData } from '../models'
 
+/**
+ * FanStudio WebSocket /all 端点消息解析器
+ *
+ * 协议格式：
+ *   { type: "update",       source: "<src>", Data: { ... } }
+ *   { type: "initial_all",  "<src>": { ... }, ... }
+ *
+ * source 取值：cea | cenc | jma | cwa | cwa-eew | usgs | weatheralarm | tsunami | cea-pr
+ */
+
+const FS_SOURCE_MAP: Record<string, DataSource> = {
+    'cea':          DataSource.FAN_STUDIO_CEA,
+    'cea-pr':       DataSource.FAN_STUDIO_CEA,
+    'cenc':         DataSource.FAN_STUDIO_CENC,
+    'jma':          DataSource.FAN_STUDIO_JMA,
+    'cwa':          DataSource.FAN_STUDIO_CWA,
+    'cwa-eew':      DataSource.FAN_STUDIO_CWA,
+    'usgs':         DataSource.FAN_STUDIO_USGS,
+    'weatheralarm': DataSource.FAN_STUDIO_WEATHER,
+    'tsunami':      DataSource.FAN_STUDIO_TSUNAMI,
+}
+
 export class FanStudioHandler extends BaseDataHandler {
     constructor() {
         super('fan_studio')
@@ -8,33 +30,11 @@ export class FanStudioHandler extends BaseDataHandler {
 
     parseMessage(data: any): DisasterEvent | null {
         try {
-            // FanStudio data usually comes in a 'Data' or 'data' field, or just the object itself
-            const msgData = data.Data || data.data || data
-            if (!msgData) return null
-
-            // Detect data source based on message content
-            const source = this.detectSource(msgData)
-
-            // Earthquake Warning (CEA, CWA, JMA EEW)
-            if (msgData.epiIntensity !== undefined || (msgData.magnitude !== undefined && msgData.isFinal !== undefined)) {
-                return this.parseEarthquakeWarning(msgData, source)
+            if (data.type === 'update') {
+                return this.parseUpdate(data)
+            } else if (data.type === 'initial_all') {
+                return this.parseInitialAll(data)
             }
-
-            // Earthquake Info (CENC, USGS, JMA Info)
-            if (msgData.eventId && msgData.magnitude !== undefined && msgData.epiIntensity === undefined) {
-                return this.parseEarthquakeInfo(msgData, source)
-            }
-
-            // Weather
-            if (msgData.headline && msgData.description) {
-                return this.parseWeather(msgData)
-            }
-
-            // Tsunami
-            if (msgData.warningInfo || (msgData.title && msgData.level && msgData.forecasts)) {
-                return this.parseTsunami(msgData)
-            }
-
             return null
         } catch (e) {
             this.logger.error(`[${this.sourceId}] Error parsing message:`, e)
@@ -42,52 +42,62 @@ export class FanStudioHandler extends BaseDataHandler {
         }
     }
 
-    private detectSource(data: any): DataSource {
-        // Check for explicit type field
-        if (data.type) {
-            const typeMap: Record<string, DataSource> = {
-                'cenc_eew': DataSource.FAN_STUDIO_CEA,
-                'cwa_eew': DataSource.FAN_STUDIO_CWA,
-                'jma_eew': DataSource.FAN_STUDIO_JMA,
-                'cenc_eq': DataSource.FAN_STUDIO_CENC,
-                'usgs_eq': DataSource.FAN_STUDIO_USGS,
-                'weather': DataSource.FAN_STUDIO_WEATHER,
-                'tsunami': DataSource.FAN_STUDIO_TSUNAMI,
-            }
-            if (typeMap[data.type]) return typeMap[data.type]
-        }
+    private parseUpdate(msg: any): DisasterEvent | null {
+        const src = String(msg.source || '').toLowerCase()
+        const source = FS_SOURCE_MAP[src]
+        if (!source) return null
 
-        // Check for source field
-        if (data.source) {
-            const sourceStr = String(data.source).toLowerCase()
-            if (sourceStr.includes('cenc')) return DataSource.FAN_STUDIO_CENC
-            if (sourceStr.includes('cwa') || sourceStr.includes('taiwan')) return DataSource.FAN_STUDIO_CWA
-            if (sourceStr.includes('jma') || sourceStr.includes('japan')) return DataSource.FAN_STUDIO_JMA
-            if (sourceStr.includes('usgs')) return DataSource.FAN_STUDIO_USGS
-        }
+        const payload = msg.Data || msg.data
+        if (!payload) return null
 
-        // Check province for Taiwan
-        if (data.province && String(data.province).includes('台湾')) {
-            return DataSource.FAN_STUDIO_CWA
-        }
-
-        // Check for Japan-specific fields (scale instead of intensity)
-        if (data.scale !== undefined && data.epiIntensity === undefined) {
-            return DataSource.FAN_STUDIO_JMA
-        }
-
-        // Check for USGS fields
-        if (data.net === 'us' || data.properties?.net === 'us') {
-            return DataSource.FAN_STUDIO_USGS
-        }
-
-        // Default to CEA for Chinese earthquake warnings
-        return DataSource.FAN_STUDIO_CEA
+        return this.dispatchBySource(source, src, payload)
     }
 
-    private parseEarthquakeWarning(data: any, source: DataSource): DisasterEvent {
+    private parseInitialAll(msg: any): DisasterEvent | null {
+        // initial_all 包含多个数据源快照，取第一个有效的推送
+        for (const [key, payload] of Object.entries(msg)) {
+            if (key === 'type') continue
+            const src = key.toLowerCase()
+            const source = FS_SOURCE_MAP[src]
+            if (!source || !payload) continue
+            const event = this.dispatchBySource(source, src, payload)
+            if (event) return event
+        }
+        return null
+    }
+
+    private dispatchBySource(source: DataSource, src: string, data: any): DisasterEvent | null {
+        switch (source) {
+            case DataSource.FAN_STUDIO_CEA:
+                return this.parseEarthquakeWarning(data, source)
+            case DataSource.FAN_STUDIO_CWA:
+                // cwa-eew 是预警，cwa 是地震报告
+                if (src === 'cwa-eew') return this.parseEarthquakeWarning(data, source)
+                return this.parseEarthquakeInfo(data, source)
+            case DataSource.FAN_STUDIO_JMA:
+                // jma 消息既有 EEW 也有地震信息，通过 isFinal/epiIntensity 判断
+                if (data.epiIntensity !== undefined || data.isFinal !== undefined) {
+                    return this.parseEarthquakeWarning(data, source)
+                }
+                return this.parseEarthquakeInfo(data, source)
+            case DataSource.FAN_STUDIO_CENC:
+                return this.parseEarthquakeInfo(data, source)
+            case DataSource.FAN_STUDIO_USGS:
+                return this.parseEarthquakeInfo(data, source)
+            case DataSource.FAN_STUDIO_WEATHER:
+                return this.parseWeather(data)
+            case DataSource.FAN_STUDIO_TSUNAMI:
+                return this.parseTsunami(data)
+            default:
+                return null
+        }
+    }
+
+    private parseEarthquakeWarning(data: any, source: DataSource): DisasterEvent | null {
+        if (!data.id && !data.eventId) return null
+
         const earthquake: EarthquakeData = {
-            id: data.id || '',
+            id: data.id || data.eventId || '',
             event_id: data.eventId || data.id || '',
             source: source,
             disaster_type: DisasterType.EARTHQUAKE_WARNING,
@@ -96,7 +106,7 @@ export class FanStudioHandler extends BaseDataHandler {
             longitude: Number(data.longitude) || 0,
             depth: Number(data.depth),
             magnitude: Number(data.magnitude),
-            intensity: Number(data.epiIntensity),
+            intensity: data.epiIntensity !== undefined ? Number(data.epiIntensity) : undefined,
             scale: data.scale !== undefined ? Number(data.scale) : undefined,
             place_name: data.placeName || '',
             province: data.province,
@@ -117,20 +127,21 @@ export class FanStudioHandler extends BaseDataHandler {
         }
     }
 
-    private parseEarthquakeInfo(data: any, source: DataSource): DisasterEvent {
-        // Determine if USGS or CENC based on source detection
-        const finalSource = source === DataSource.FAN_STUDIO_CEA ? DataSource.FAN_STUDIO_CENC : source
+    private parseEarthquakeInfo(data: any, source: DataSource): DisasterEvent | null {
+        if (!data.id && !data.eventId) return null
 
         const earthquake: EarthquakeData = {
-            id: data.id || '',
+            id: data.id || data.eventId || '',
             event_id: data.eventId || data.id || '',
-            source: finalSource,
+            source: source,
             disaster_type: DisasterType.EARTHQUAKE,
             shock_time: this.parseDateTime(data.shockTime) || new Date().toISOString(),
             latitude: Number(data.latitude) || 0,
             longitude: Number(data.longitude) || 0,
             depth: Number(data.depth),
             magnitude: Number(data.magnitude),
+            intensity: data.epiIntensity !== undefined ? Number(data.epiIntensity) : undefined,
+            scale: data.scale !== undefined ? Number(data.scale) : undefined,
             place_name: data.placeName || '',
             updates: 1,
             is_final: true,
@@ -141,7 +152,7 @@ export class FanStudioHandler extends BaseDataHandler {
         return {
             id: earthquake.id,
             data: earthquake,
-            source: finalSource,
+            source: source,
             disaster_type: DisasterType.EARTHQUAKE,
             receive_time: new Date().toISOString(),
             push_count: 0,
@@ -149,13 +160,15 @@ export class FanStudioHandler extends BaseDataHandler {
         }
     }
 
-    private parseWeather(data: any): DisasterEvent {
+    private parseWeather(data: any): DisasterEvent | null {
+        if (!data.headline && !data.title) return null
+
         const weather: WeatherAlarmData = {
             id: data.id || `weather_${Date.now()}`,
             source: DataSource.FAN_STUDIO_WEATHER,
-            headline: data.headline,
-            title: data.title || data.headline,
-            description: data.description,
+            headline: data.headline || data.title || '',
+            title: data.title || data.headline || '',
+            description: data.description || '',
             type: data.type || 'unknown',
             effective_time: this.parseDateTime(data.effectiveTime) || new Date().toISOString(),
             disaster_type: DisasterType.WEATHER_ALARM,
@@ -175,7 +188,9 @@ export class FanStudioHandler extends BaseDataHandler {
         }
     }
 
-    private parseTsunami(data: any): DisasterEvent {
+    private parseTsunami(data: any): DisasterEvent | null {
+        if (!data.title && !data.warningInfo) return null
+
         const tsunami: TsunamiData = {
             id: data.id || `tsunami_${Date.now()}`,
             code: data.code || '',

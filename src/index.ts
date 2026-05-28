@@ -9,10 +9,8 @@ export const inject = {
 }
 
 export interface Config {
-    enabled: boolean
     target_groups: string[]
 
-    // 数据类型
     data_types: {
         earthquake_warning: boolean
         earthquake_info: boolean
@@ -20,7 +18,6 @@ export interface Config {
         weather_alarm: boolean
     }
 
-    // 地区过滤
     regions: {
         china: boolean
         taiwan: boolean
@@ -28,15 +25,6 @@ export interface Config {
         global: boolean
     }
 
-    // 各数据源独立开关（替换原 source_priority）
-    data_sources: {
-        fan_studio: boolean
-        wolfx: boolean
-        p2p: boolean
-        global_quake: boolean
-    }
-
-    // 过滤阈值
     filter: {
         min_magnitude_absolute: number
         min_magnitude_for_push: number
@@ -46,32 +34,23 @@ export interface Config {
 }
 
 export const Config: Schema<Config> = Schema.object({
-    enabled: Schema.boolean().default(true).description('启用灾害预警插件'),
-
     target_groups: Schema.array(Schema.string())
         .default([])
         .description('推送目标群号列表，直接填写群号即可，例如 123456789'),
 
     data_types: Schema.object({
-        earthquake_warning: Schema.boolean().default(true).description('地震预警（实时速报，震前预警）'),
-        earthquake_info: Schema.boolean().default(true).description('地震信息（震后测定报告）'),
+        earthquake_warning: Schema.boolean().default(true).description('地震预警（实时速报，震前预警，会持续推送刷屏）'),
+        earthquake_info: Schema.boolean().default(true).description('地震信息（震后测定报告，同一事件只推一次）'),
         tsunami_warning: Schema.boolean().default(true).description('海啸预警'),
         weather_alarm: Schema.boolean().default(false).description('气象预警（中国）'),
     }).description('接收的灾害类型'),
 
     regions: Schema.object({
-        china: Schema.boolean().default(true).description('中国大陆'),
-        taiwan: Schema.boolean().default(true).description('台湾'),
-        japan: Schema.boolean().default(true).description('日本'),
-        global: Schema.boolean().default(false).description('全球（USGS / GlobalQuake）'),
-    }).description('接收的地区'),
-
-    data_sources: Schema.object({
-        fan_studio: Schema.boolean().default(true).description('FAN Studio（中国预警/台湾/USGS/日本/气象/海啸）'),
-        wolfx: Schema.boolean().default(true).description('Wolfx（中国/台湾/日本 EEW，以及中国/日本地震列表）'),
-        p2p: Schema.boolean().default(true).description('P2P地震情報（日本 EEW / 地震情报 / 海啸）'),
-        global_quake: Schema.boolean().default(false).description('GlobalQuake（全球实时地震，流量较大）'),
-    }).description('数据源开关（可单独禁用某个来源）'),
+        china: Schema.boolean().default(true).description('中国大陆（CEA预警 / CENC地震台网 / 气象 / 海啸）'),
+        taiwan: Schema.boolean().default(true).description('台湾（CWA预警与地震报告）'),
+        japan: Schema.boolean().default(true).description('日本（JMA EEW / P2P地震情报 / 海啸）'),
+        global: Schema.boolean().default(false).description('全球（USGS 地震信息 / GlobalQuake 实时预警）'),
+    }).description('接收的地区（数据源连接将依据此项自动开启）'),
 
     filter: Schema.object({
         min_magnitude_absolute: Schema.number().default(3.0).description('绝对过滤震级：低于此震级直接丢弃（不推送）'),

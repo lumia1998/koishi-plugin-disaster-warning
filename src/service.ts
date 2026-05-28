@@ -7,15 +7,15 @@ import { MessagePushManager } from './pusher'
 
 const logger = new Logger('disaster-warning')
 
-// Wolfx HTTP 列表获取间隔（5 分钟）
+// Wolfx HTTP 列表轮询间隔（5 分钟）
 const WOLFX_HTTP_INTERVAL_MS = 5 * 60 * 1000
 
 // FanStudio 备用服务器
 const FAN_STUDIO_PRIMARY = 'wss://ws.fanstudio.tech/all'
-const FAN_STUDIO_BACKUP = 'wss://ws.fanstudio.hk/all'
+const FAN_STUDIO_BACKUP  = 'wss://ws.fanstudio.hk/all'
 
-// WebSocket 重连延迟（秒），超过 MAX_RETRY 次后切备用服务器
-const RECONNECT_DELAY_MS = 10_000
+// WebSocket 重连延迟，超过阈值次数后切换到备用服务器
+const RECONNECT_DELAY_MS       = 10_000
 const FALLBACK_RETRY_THRESHOLD = 5
 
 interface ConnectionEntry {
@@ -56,7 +56,6 @@ export class DisasterWarningService {
     }
 
     async start() {
-        if (!this.config.enabled) return
         this.stopped = false
         logger.info('Disaster Warning Service starting...')
         this.connectAll()
@@ -87,42 +86,39 @@ export class DisasterWarningService {
     // ---- 连接调度 --------------------------------------------------------
 
     private connectAll() {
-        const { regions, data_types, data_sources } = this.config
+        const { regions, data_types } = this.config
 
-        // FAN Studio — 单连接 /all，覆盖中国/台湾/USGS/日本/气象/海啸
-        if (data_sources.fan_studio) {
-            const needFanStudio =
-                (regions.china && (data_types.earthquake_warning || data_types.earthquake_info || data_types.weather_alarm || data_types.tsunami_warning)) ||
-                (regions.taiwan && (data_types.earthquake_warning || data_types.earthquake_info)) ||
-                (regions.japan && (data_types.earthquake_warning || data_types.earthquake_info)) ||
-                (regions.global && data_types.earthquake_info)
-            if (needFanStudio) {
-                this.openConnection('fan_studio', FAN_STUDIO_PRIMARY, FAN_STUDIO_BACKUP, (data) => {
-                    this.handleEvent(this.handlers.fanStudio.parseMessage(data))
-                })
-            }
+        // FanStudio /all：覆盖中国(CEA/CENC/气象/海啸)、台湾(CWA)、日本(JMA)、全球(USGS)
+        const needFanStudio =
+            (regions.china && (data_types.earthquake_warning || data_types.earthquake_info || data_types.weather_alarm || data_types.tsunami_warning)) ||
+            (regions.taiwan && (data_types.earthquake_warning || data_types.earthquake_info)) ||
+            (regions.japan && (data_types.earthquake_warning || data_types.earthquake_info)) ||
+            (regions.global && data_types.earthquake_info)
+
+        if (needFanStudio) {
+            this.openConnection('fan_studio', FAN_STUDIO_PRIMARY, FAN_STUDIO_BACKUP, (data) => {
+                this.handleEvent(this.handlers.fanStudio.parseMessage(data))
+            })
         }
 
-        // P2P — 日本 EEW / 地震情报 / 海啸
-        if (data_sources.p2p && regions.japan &&
+        // P2P：日本 EEW / 地震情报 / 海啸
+        if (regions.japan &&
             (data_types.earthquake_warning || data_types.earthquake_info || data_types.tsunami_warning)) {
             this.openConnection('p2p', 'wss://api.p2pquake.net/v2/ws', undefined, (data) => {
                 this.handleEvent(this.handlers.p2p.parseMessage(data))
             })
         }
 
-        // Wolfx — /all_eew 合并端点，接收中国/台湾/日本 EEW
-        // eqlist 改为 HTTP 轮询（见 startWolfxHttpPoller）
-        if (data_sources.wolfx &&
-            (data_types.earthquake_warning) &&
+        // Wolfx /all_eew：中国/台湾/日本 EEW（仅预警类型）
+        if (data_types.earthquake_warning &&
             (regions.china || regions.taiwan || regions.japan)) {
             this.openConnection('wolfx_eew', 'wss://ws-api.wolfx.jp/all_eew', undefined, (data) => {
                 this.handleEvent(this.wolfxHandler.parseMessage(data))
             })
         }
 
-        // GlobalQuake — 全球实时预警
-        if (data_sources.global_quake && regions.global && data_types.earthquake_warning) {
+        // GlobalQuake：全球实时预警
+        if (regions.global && data_types.earthquake_warning) {
             this.openConnection('global_quake', 'wss://gqm.aloys233.top/ws', undefined, (data) => {
                 this.handleEvent(this.handlers.globalQuake.parseMessage(data))
             })
@@ -189,19 +185,21 @@ export class DisasterWarningService {
         })
     }
 
-    // ---- Wolfx HTTP 轮询（地震列表） -------------------------------------
+    // ---- Wolfx HTTP 轮询（地震列表）------------------------------------
 
     private startWolfxHttpPoller() {
-        if (!this.config.data_sources.wolfx || !this.config.data_types.earthquake_info) return
+        const { regions, data_types } = this.config
+        if (!data_types.earthquake_info) return
+        if (!regions.china && !regions.japan) return
 
         const poll = async () => {
             if (this.stopped) return
             try {
-                if (this.config.regions.china) {
+                if (regions.china) {
                     const data = await this.ctx.http.get('https://api.wolfx.jp/cenc_eqlist.json')
                     if (data) this.handleEvent(this.wolfxHandler.parseEqList(data, 'cenc'))
                 }
-                if (this.config.regions.japan) {
+                if (regions.japan) {
                     const data = await this.ctx.http.get('https://api.wolfx.jp/jma_eqlist.json')
                     if (data) this.handleEvent(this.wolfxHandler.parseEqList(data, 'jma'))
                 }
@@ -210,8 +208,8 @@ export class DisasterWarningService {
             }
         }
 
-        // 立即执行一次，然后每 5 分钟轮询
-        poll()
+        // 延迟首次拉取，避免重启时将旧地震当新事件推送
+        // 去重窗口（8分钟）> 轮询间隔（5分钟），不会漏报
         this.wolfxHttpTimer = setInterval(poll, WOLFX_HTTP_INTERVAL_MS)
     }
 
@@ -231,29 +229,26 @@ export class DisasterWarningService {
         const { data_types, regions } = this.config
 
         const isEarthquakeWarning = event.disaster_type === DisasterType.EARTHQUAKE_WARNING
-        const isEarthquakeInfo = event.disaster_type === DisasterType.EARTHQUAKE
-        const isTsunami = event.disaster_type === DisasterType.TSUNAMI
-        const isWeather = event.disaster_type === DisasterType.WEATHER_ALARM
+        const isEarthquakeInfo    = event.disaster_type === DisasterType.EARTHQUAKE
+        const isTsunami           = event.disaster_type === DisasterType.TSUNAMI
+        const isWeather           = event.disaster_type === DisasterType.WEATHER_ALARM
 
         if (isEarthquakeWarning && !data_types.earthquake_warning) return false
-        if (isEarthquakeInfo && !data_types.earthquake_info) return false
-        if (isTsunami && !data_types.tsunami_warning) return false
-        if (isWeather && !data_types.weather_alarm) return false
+        if (isEarthquakeInfo    && !data_types.earthquake_info)    return false
+        if (isTsunami           && !data_types.tsunami_warning)    return false
+        if (isWeather           && !data_types.weather_alarm)      return false
 
         const src = event.source
-        const japanSources = [
-            DataSource.P2P_EEW, DataSource.P2P_EARTHQUAKE, DataSource.P2P_TSUNAMI,
-            DataSource.WOLFX_JMA_EEW, DataSource.WOLFX_JMA_EQ, DataSource.FAN_STUDIO_JMA
-        ]
-        const chinaSources = [
-            DataSource.FAN_STUDIO_CEA, DataSource.FAN_STUDIO_CENC, DataSource.FAN_STUDIO_WEATHER,
-            DataSource.FAN_STUDIO_TSUNAMI, DataSource.WOLFX_CENC_EEW, DataSource.WOLFX_CENC_EQ
-        ]
+
+        const japanSources  = [DataSource.P2P_EEW, DataSource.P2P_EARTHQUAKE, DataSource.P2P_TSUNAMI,
+                               DataSource.WOLFX_JMA_EEW, DataSource.WOLFX_JMA_EQ, DataSource.FAN_STUDIO_JMA]
+        const chinaSources  = [DataSource.FAN_STUDIO_CEA, DataSource.FAN_STUDIO_CENC, DataSource.FAN_STUDIO_WEATHER,
+                               DataSource.FAN_STUDIO_TSUNAMI, DataSource.WOLFX_CENC_EEW, DataSource.WOLFX_CENC_EQ]
         const taiwanSources = [DataSource.FAN_STUDIO_CWA, DataSource.WOLFX_CWA_EEW]
         const globalSources = [DataSource.FAN_STUDIO_USGS, DataSource.GLOBAL_QUAKE]
 
-        if (japanSources.includes(src) && !regions.japan) return false
-        if (chinaSources.includes(src) && !regions.china) return false
+        if (japanSources.includes(src)  && !regions.japan)  return false
+        if (chinaSources.includes(src)  && !regions.china)  return false
         if (taiwanSources.includes(src) && !regions.taiwan) return false
         if (globalSources.includes(src) && !regions.global) return false
 
@@ -271,7 +266,6 @@ export class DisasterWarningService {
                 url: entry.url
             }
         }
-        // Wolfx HTTP poller 状态
         result['wolfx_http_poller'] = {
             connected: this.wolfxHttpTimer !== null,
             retryCount: 0,
