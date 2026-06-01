@@ -1,6 +1,6 @@
 {
     "name": "koishi-plugin-disaster-warning",
-    "version": "0.1.3",
+    "version": "0.1.4",
     "description": "Koishi 灾害预警插件，支持多数据源（地震、海啸、气象预警）",
     "contributors": [
         "lumia.wang <fenglian19980510@gmail.com>"
@@ -27,12 +27,14 @@
         "chatbot",
         "koishi",
         "plugin",
+        "chatluna",
         "disaster",
         "earthquake",
         "warning"
     ],
     "peerDependencies": {
-        "koishi": "^4.18.0"
+        "koishi": "^4.18.0",
+        "koishi-plugin-chatluna": "^1.3.0 || ^1.4.0-alpha.0"
     },
     "devDependencies": {
         "@types/node": "^20.0.0",
@@ -50,11 +52,19 @@
                 "http"
             ],
             "optional": [
-                "database"
+                "database",
+                "chatluna"
             ]
         }
     },
     "dependencies": {
-        "ws": "^8.18.0"
+        "@langchain/core": "^0.3.80",
+        "ws": "^8.18.0",
+        "zod": "^3.25.76"
+    },
+    "peerDependenciesMeta": {
+        "koishi-plugin-chatluna": {
+            "optional": true
+        }
     }
 }

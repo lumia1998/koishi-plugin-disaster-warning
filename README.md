@@ -30,6 +30,9 @@ Koishi 灾害预警插件，支持多数据源（地震、海啸、气象预警�
 ### 🔁 事件去重功能
 插件具备基础的事件去重功能，防止同一地震被同一个数据源重复推送。
 
+### 🤖 ChatLuna 工具调用
+可选注册 `disaster_warning` 工具给 ChatLuna 使用，让模型主动查询近期地震、按地点/震级/时间过滤，或查看数据源连接状态。适合回答“哪里地震了”“某地最近有没有地震”“我关心的人在某地，那里安全吗”等问题。
+
 ## 🚀 安装与使用
 
 ### 安装
@@ -55,6 +58,32 @@ npm install koishi-plugin-disaster-warning
 `regions` 同时控制数据源连接与地震震中地区过滤。例如仅开启中国大陆和台湾、关闭日本与全球时，插件仍可连接 CENC/CWA 等相关数据源，但智利、印尼等不在已开启地区内的地震会被丢弃，不会因为由 CENC 发布就被推送。
 
 当前震中识别优先使用地名关键词，其次使用经纬度范围；无法识别且带有非空地名的地震默认视为全球事件。
+
+### ChatLuna 工具设置
+
+如果安装了 `koishi-plugin-chatluna`，可以在 `chatluna` 配置项中开启工具注册：
+
+- `chatluna.enabled`：开启后注册 ChatLuna 工具，默认关闭。
+- `chatluna.name`：工具名称，默认 `disaster_warning`。
+- `chatluna.default_source`：模型未指定来源时查询 `all`、`cenc`、`jma` 或 `usgs`。
+- `chatluna.default_days`：默认查询最近多少天。
+- `chatluna.default_limit`：默认最多返回多少条记录。
+- `chatluna.min_magnitude`：默认最低震级。
+- `chatluna.include_usgs_when_all`：综合查询时是否包含 USGS 全球地震。
+
+工具输入示例：
+
+```json
+{
+  "action": "recent_earthquakes",
+  "location": "智利",
+  "min_magnitude": 5,
+  "days": 7,
+  "limit": 5
+}
+```
+
+也可以使用 `{ "action": "status" }` 查询当前数据源连接状态。
 
 ## 📋 使用命令
 
