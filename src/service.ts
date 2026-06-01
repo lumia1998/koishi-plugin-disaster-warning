@@ -1,7 +1,7 @@
 import { Context, Logger } from 'koishi'
 import { Config } from './index'
 import { WebSocket } from 'ws'
-import { DisasterEvent, DataSource, DisasterType, EventDeduplicator } from './models'
+import { DisasterEvent, DataSource, DisasterType, EarthquakeData, EventDeduplicator } from './models'
 import { FanStudioHandler, P2PHandler, WolfxHandler, GlobalQuakeHandler } from './handlers'
 import { MessagePushManager } from './pusher'
 
@@ -17,6 +17,8 @@ const FAN_STUDIO_BACKUP  = 'wss://ws.fanstudio.hk/all'
 // WebSocket 重连延迟，超过阈值次数后切换到备用服务器
 const RECONNECT_DELAY_MS       = 10_000
 const FALLBACK_RETRY_THRESHOLD = 5
+
+type GeographicRegion = 'china' | 'taiwan' | 'japan' | 'global' | 'unknown'
 
 interface ConnectionEntry {
     url: string
@@ -252,7 +254,193 @@ export class DisasterWarningService {
         if (taiwanSources.includes(src) && !regions.taiwan) return false
         if (globalSources.includes(src) && !regions.global) return false
 
+        if ((isEarthquakeWarning || isEarthquakeInfo) && !this.shouldPushEarthquakeByLocation(event)) {
+            const data = event.data as EarthquakeData
+            logger.debug(`[region] Skipping earthquake outside enabled regions: ${data.place_name || event.id}`)
+            return false
+        }
+
         return true
+    }
+
+    private shouldPushEarthquakeByLocation(event: DisasterEvent): boolean {
+        const region = this.detectEarthquakeRegion(event.data as EarthquakeData, event.source)
+        switch (region) {
+            case 'china':
+                return this.config.regions.china
+            case 'taiwan':
+                return this.config.regions.taiwan
+            case 'japan':
+                return this.config.regions.japan
+            case 'global':
+                return this.config.regions.global
+            case 'unknown':
+                return this.shouldAllowUnknownEarthquakeRegion(event.source)
+        }
+    }
+
+    private detectEarthquakeRegion(data: EarthquakeData, source: DataSource): GeographicRegion {
+        const place = data.place_name?.replace(/\s+/g, '').toLowerCase() || ''
+
+        const placeRegion = this.detectRegionByPlace(place)
+        if (placeRegion) return placeRegion
+
+        const lat = this.validLatitude(data.latitude)
+        const lon = this.validLongitude(data.longitude)
+        if (lat === undefined || lon === undefined) return this.fallbackRegionForMissingCoordinates(data, source, place)
+
+        // Many upstream cancellation packets use 0,0 when coordinates are unavailable.
+        if (lat === 0 && lon === 0) return this.fallbackRegionForMissingCoordinates(data, source, place)
+
+        if (this.isTaiwanCoordinate(lat, lon)) return 'taiwan'
+        if (this.isJapanCoordinate(lat, lon)) return 'japan'
+        if (this.isMainlandChinaCoordinate(lat, lon)) return 'china'
+        return 'global'
+    }
+
+    private detectRegionByPlace(place: string): GeographicRegion | null {
+        if (!place) return null
+
+        if (this.includesAny(place, [
+            '台湾', '臺灣', '台灣', 'taiwan', '花莲', '花蓮', '宜兰', '宜蘭', '台东', '臺東', '台東',
+            '台北', '臺北', '新北', '桃园', '桃園', '台中', '臺中', '台南', '臺南', '高雄', '嘉义', '嘉義',
+            '屏东', '屏東', '南投', '澎湖'
+        ])) return 'taiwan'
+
+        if (this.includesAny(place, [
+            '日本', 'japan', '北海道', '本州', '四国', '四國', '九州', '沖縄', '冲绳', '琉球', '小笠原',
+            '伊豆', '鳥島', '鸟岛', '青森', '岩手', '宮城', '宫城', '秋田', '山形', '福島', '福岛',
+            '茨城', '栃木', '群馬', '群马', '埼玉', '千葉', '千叶', '東京', '东京', '神奈川', '新潟',
+            '富山', '石川', '福井', '山梨', '長野', '长野', '岐阜', '静岡', '静冈', '愛知', '爱知',
+            '三重', '滋賀', '滋贺', '京都', '大阪', '兵庫', '兵库', '奈良', '和歌山', '鳥取', '鸟取',
+            '島根', '岛根', '岡山', '冈山', '広島', '广岛', '山口', '徳島', '德岛', '香川', '愛媛',
+            '爱媛', '高知', '福岡', '福冈', '佐賀', '佐贺', '長崎', '长崎', '熊本', '大分', '宮崎',
+            '宫崎', '鹿児島', '鹿儿岛'
+        ])) return 'japan'
+
+        if (this.includesAny(place, [
+            '中国', 'china', '北京', '天津', '河北', '山西', '内蒙古', '辽宁', '遼寧', '吉林', '黑龙江',
+            '黑龍江', '上海', '江苏', '江蘇', '浙江', '安徽', '福建', '江西', '山东', '山東', '河南',
+            '湖北', '湖南', '广东', '廣東', '广西', '廣西', '海南', '重庆', '重慶', '四川', '贵州',
+            '貴州', '云南', '雲南', '西藏', '陕西', '陝西', '甘肃', '甘肅', '青海', '宁夏', '寧夏',
+            '新疆', '香港', '澳门', '澳門'
+        ])) return 'china'
+
+        return null
+    }
+
+    private includesAny(text: string, keywords: string[]): boolean {
+        return keywords.some((keyword) => text.includes(keyword.toLowerCase()))
+    }
+
+    private validLatitude(value: number): number | undefined {
+        return Number.isFinite(value) && value >= -90 && value <= 90 ? value : undefined
+    }
+
+    private validLongitude(value: number): number | undefined {
+        return Number.isFinite(value) && value >= -180 && value <= 180 ? value : undefined
+    }
+
+    private isTaiwanCoordinate(lat: number, lon: number): boolean {
+        return lat >= 21.5 && lat <= 26.5 && lon >= 119 && lon <= 123.8
+    }
+
+    private isJapanCoordinate(lat: number, lon: number): boolean {
+        const mainIslands = lat >= 30 && lat <= 46.5 && lon >= 129 && lon <= 146.5
+        const ryukyu = lat >= 24 && lat < 30 && lon >= 122 && lon <= 131.5
+        const izuOgasawara = lat >= 20 && lat <= 34 && lon >= 139 && lon <= 154.5
+        return mainIslands || ryukyu || izuOgasawara
+    }
+
+    private isMainlandChinaCoordinate(lat: number, lon: number): boolean {
+        if (lat >= 18 && lat <= 20.5 && lon >= 108 && lon <= 111.5) return true
+
+        // Rough mainland China outline. Place-name detection runs first, this is only a coordinate fallback.
+        return this.pointInPolygon(lon, lat, [
+            [73.5, 39.5],
+            [74.9, 37.2],
+            [75.5, 35.4],
+            [78.4, 32.5],
+            [78.7, 30.2],
+            [80.5, 30.0],
+            [81.8, 28.5],
+            [85.2, 28.3],
+            [88.9, 27.3],
+            [91.0, 27.8],
+            [93.3, 28.7],
+            [95.5, 28.2],
+            [97.3, 23.8],
+            [98.9, 24.1],
+            [100.1, 21.4],
+            [101.8, 21.2],
+            [103.8, 22.5],
+            [106.8, 20.0],
+            [108.7, 18.2],
+            [111.3, 18.0],
+            [113.7, 21.8],
+            [116.7, 22.7],
+            [118.5, 24.5],
+            [121.8, 29.0],
+            [122.2, 31.8],
+            [121.5, 35.0],
+            [124.0, 39.8],
+            [126.8, 41.9],
+            [130.0, 42.3],
+            [134.7, 48.2],
+            [131.0, 47.7],
+            [128.0, 49.6],
+            [123.3, 53.5],
+            [119.5, 50.0],
+            [117.0, 49.6],
+            [111.0, 49.2],
+            [105.0, 45.0],
+            [97.0, 42.8],
+            [91.0, 45.2],
+            [87.0, 49.0],
+            [82.0, 47.2],
+            [79.0, 43.0],
+        ])
+    }
+
+    private pointInPolygon(lon: number, lat: number, polygon: number[][]): boolean {
+        let inside = false
+        for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+            const xi = polygon[i][0]
+            const yi = polygon[i][1]
+            const xj = polygon[j][0]
+            const yj = polygon[j][1]
+            const intersects = ((yi > lat) !== (yj > lat)) &&
+                (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi)
+            if (intersects) inside = !inside
+        }
+        return inside
+    }
+
+    private fallbackRegionForMissingCoordinates(data: EarthquakeData, source: DataSource, place: string): GeographicRegion {
+        if (place && !data.is_cancel) return 'global'
+        return this.fallbackRegionBySource(source)
+    }
+
+    private shouldAllowUnknownEarthquakeRegion(source: DataSource): boolean {
+        const fallback = this.fallbackRegionBySource(source)
+        if (fallback === 'unknown') return this.config.regions.global
+        return this.isRegionEnabled(fallback)
+    }
+
+    private fallbackRegionBySource(source: DataSource): GeographicRegion {
+        if ([DataSource.FAN_STUDIO_CEA, DataSource.FAN_STUDIO_CENC, DataSource.WOLFX_CENC_EEW, DataSource.WOLFX_CENC_EQ].includes(source)) return 'china'
+        if ([DataSource.FAN_STUDIO_CWA, DataSource.WOLFX_CWA_EEW].includes(source)) return 'taiwan'
+        if ([DataSource.FAN_STUDIO_JMA, DataSource.P2P_EEW, DataSource.P2P_EARTHQUAKE, DataSource.WOLFX_JMA_EEW, DataSource.WOLFX_JMA_EQ].includes(source)) return 'japan'
+        if ([DataSource.FAN_STUDIO_USGS, DataSource.GLOBAL_QUAKE].includes(source)) return 'global'
+        return 'unknown'
+    }
+
+    private isRegionEnabled(region: GeographicRegion): boolean {
+        if (region === 'china') return this.config.regions.china
+        if (region === 'taiwan') return this.config.regions.taiwan
+        if (region === 'japan') return this.config.regions.japan
+        if (region === 'global') return this.config.regions.global
+        return false
     }
 
     // ---- 状态查询（供 commands 使用）------------------------------------

@@ -50,7 +50,7 @@ export const Config: Schema<Config> = Schema.object({
         taiwan: Schema.boolean().default(true).description('台湾（CWA预警与地震报告）'),
         japan: Schema.boolean().default(true).description('日本（JMA EEW / P2P地震情报 / 海啸）'),
         global: Schema.boolean().default(false).description('全球（USGS 地震信息 / GlobalQuake 实时预警）'),
-    }).description('接收的地区（数据源连接将依据此项自动开启）'),
+    }).description('接收的地区（数据源连接将依据此项自动开启，地震类事件会按震中位置过滤）'),
 
     filter: Schema.object({
         min_magnitude_absolute: Schema.number().default(3.0).description('绝对过滤震级：低于此震级直接丢弃（不推送）'),
