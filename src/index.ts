@@ -37,6 +37,8 @@ export interface Config {
         enabled: boolean
         name: string
         description: string
+        weather_name: string
+        weather_description: string
         default_source: 'all' | 'cenc' | 'jma' | 'usgs'
         default_limit: number
         default_days: number
@@ -72,9 +74,11 @@ export const Config: Schema<Config> = Schema.object({
     }).description('过滤阈值（地震类事件，海啸/气象不受此限制）'),
 
     chatluna: Schema.object({
-        enabled: Schema.boolean().default(false).description('开启后注册 ChatLuna 工具，供模型主动查询近期地震与数据源状态'),
+        enabled: Schema.boolean().default(false).description('开启后注册 ChatLuna 工具，供模型主动查询近期地震、气象预警与数据源状态'),
         name: Schema.string().default('disaster_warning').description('ChatLuna 工具名称'),
         description: Schema.string().default('查询近期地震和灾害预警数据源状态，可按地点、震级、时间范围过滤。适合回答“哪里地震了”“某地最近有没有地震”“关心的人所在地区是否有地震”等问题。').description('ChatLuna 工具描述'),
+        weather_name: Schema.string().default('weather_warning').description('气象预警 ChatLuna 工具名称'),
+        weather_description: Schema.string().default('查询中国近期气象预警，可按地区、预警类型、颜色级别和时间范围过滤，也可按预警 ID 查询详情。适合回答“某地近期有天气预警吗”“有哪些暴雨或台风预警”等问题。').description('气象预警 ChatLuna 工具描述'),
         default_source: Schema.union([
             Schema.const('all').description('综合 CENC / JMA / USGS'),
             Schema.const('cenc').description('中国地震台网 / Wolfx CENC'),

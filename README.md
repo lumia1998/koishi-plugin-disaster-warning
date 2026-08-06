@@ -31,7 +31,7 @@ Koishi 灾害预警插件，支持多数据源（地震、海啸、气象预警�
 插件具备基础的事件去重功能，防止同一地震被同一个数据源重复推送。
 
 ### 🤖 ChatLuna 工具调用
-可选注册 `disaster_warning` 工具给 ChatLuna 使用，让模型主动查询近期地震、按地点/震级/时间过滤，或查看数据源连接状态。适合回答“哪里地震了”“某地最近有没有地震”“我关心的人在某地，那里安全吗”等问题。
+可选注册 `disaster_warning` 和 `weather_warning` 工具给 ChatLuna 使用，让模型主动查询近期地震、近期气象预警或数据源连接状态。气象预警支持按地区、类型、颜色和时间范围过滤，也可按预警 ID 查询详情。
 
 ## 🚀 安装与使用
 
@@ -65,6 +65,7 @@ npm install koishi-plugin-disaster-warning
 
 - `chatluna.enabled`：开启后注册 ChatLuna 工具，默认关闭。
 - `chatluna.name`：工具名称，默认 `disaster_warning`。
+- `chatluna.weather_name`：气象预警工具名称，默认 `weather_warning`。
 - `chatluna.default_source`：模型未指定来源时查询 `all`、`cenc`、`jma` 或 `usgs`。
 - `chatluna.default_days`：默认查询最近多少天。
 - `chatluna.default_limit`：默认最多返回多少条记录。
@@ -84,6 +85,20 @@ npm install koishi-plugin-disaster-warning
 ```
 
 也可以使用 `{ "action": "status" }` 查询当前数据源连接状态。
+
+气象预警工具输入示例：
+
+```json
+{
+  "location": "广东",
+  "type": "暴雨",
+  "color": "黄色",
+  "hours": 24,
+  "limit": 10
+}
+```
+
+气象预警来自插件运行期间接收的 FAN Studio 中国气象局实时数据，内存中最多保留最近 72 小时；指定 `id` 可查询单条预警详情。
 
 ## 📋 使用命令
 

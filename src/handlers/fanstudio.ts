@@ -35,6 +35,11 @@ export class FanStudioHandler extends BaseDataHandler {
             } else if (data.type === 'initial_all') {
                 return this.parseInitialAll(data)
             }
+
+            const payload = data.Data || data.data || data
+            if (payload && (payload.headline || payload.title) && payload.type) {
+                return this.parseWeather(payload)
+            }
             return null
         } catch (e) {
             this.logger.error(`[${this.sourceId}] Error parsing message:`, e)
@@ -45,10 +50,13 @@ export class FanStudioHandler extends BaseDataHandler {
     private parseUpdate(msg: any): DisasterEvent | null {
         const src = String(msg.source || '').toLowerCase()
         const source = FS_SOURCE_MAP[src]
-        if (!source) return null
-
         const payload = msg.Data || msg.data
         if (!payload) return null
+
+        if (!source && (payload.headline || payload.title) && payload.type) {
+            return this.parseWeather(payload)
+        }
+        if (!source) return null
 
         return this.dispatchBySource(source, src, payload)
     }
@@ -170,10 +178,13 @@ export class FanStudioHandler extends BaseDataHandler {
             title: data.title || data.headline || '',
             description: data.description || '',
             type: data.type || 'unknown',
-            effective_time: this.parseDateTime(data.effectiveTime) || new Date().toISOString(),
+            effective_time: this.parseDateTime(data.effectiveTime || data.effective) || new Date().toISOString(),
             disaster_type: DisasterType.WEATHER_ALARM,
-            issue_time: this.parseDateTime(data.issueTime),
-            affected_areas: data.affectedAreas || [],
+            issue_time: this.parseDateTime(data.issueTime || data.issue_time),
+            longitude: toOptionalNumber(data.longitude),
+            latitude: toOptionalNumber(data.latitude),
+            alert_level: data.alertLevel || data.alert_level,
+            affected_areas: data.affectedAreas || data.affected_areas || [],
             raw_data: data
         }
 
@@ -214,4 +225,10 @@ export class FanStudioHandler extends BaseDataHandler {
             raw_data: data
         }
     }
+}
+
+function toOptionalNumber(value: unknown): number | undefined {
+    if (value === undefined || value === null || value === '') return undefined
+    const number = Number(value)
+    return Number.isFinite(number) ? number : undefined
 }

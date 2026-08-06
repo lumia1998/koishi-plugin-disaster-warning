@@ -1,7 +1,7 @@
 import { Context, Logger } from 'koishi'
 import { Config } from './index'
 import { WebSocket } from 'ws'
-import { DisasterEvent, DataSource, DisasterType, EarthquakeData, EventDeduplicator } from './models'
+import { DisasterEvent, DataSource, DisasterType, EarthquakeData, EventDeduplicator, WeatherAlarmData } from './models'
 import { FanStudioHandler, P2PHandler, WolfxHandler, GlobalQuakeHandler } from './handlers'
 import { MessagePushManager } from './pusher'
 
@@ -9,6 +9,8 @@ const logger = new Logger('disaster-warning')
 
 // Wolfx HTTP 列表轮询间隔（5 分钟）
 const WOLFX_HTTP_INTERVAL_MS = 5 * 60 * 1000
+const WEATHER_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
+const WEATHER_CACHE_LIMIT = 5000
 
 // FanStudio 备用服务器
 const FAN_STUDIO_PRIMARY = 'wss://ws.fanstudio.tech/all'
@@ -44,6 +46,7 @@ export class DisasterWarningService {
 
     private connections: Record<string, ConnectionEntry> = {}
     private wolfxHttpTimer: ReturnType<typeof setInterval> | null = null
+    private weatherAlarmCache = new Map<string, WeatherAlarmData>()
 
     constructor(ctx: Context, config: Config) {
         this.ctx = ctx
@@ -101,6 +104,15 @@ export class DisasterWarningService {
             this.openConnection('fan_studio', FAN_STUDIO_PRIMARY, FAN_STUDIO_BACKUP, (data) => {
                 this.handleEvent(this.handlers.fanStudio.parseMessage(data))
             })
+        }
+
+        if (this.config.chatluna?.enabled) {
+            this.openConnection(
+                'fan_studio_weather',
+                'wss://ws.fanstudio.tech/weatheralarm',
+                'wss://ws.fanstudio.hk/weatheralarm',
+                (data) => this.handleEvent(this.handlers.fanStudio.parseMessage(data))
+            )
         }
 
         // P2P：日本 EEW / 地震情报 / 海啸
@@ -219,6 +231,9 @@ export class DisasterWarningService {
 
     private async handleEvent(event: DisasterEvent | null) {
         if (!event) return
+        if (event.disaster_type === DisasterType.WEATHER_ALARM) {
+            this.cacheWeatherAlarm(event.data as WeatherAlarmData)
+        }
         if (!this.shouldPushEvent(event)) return
         if (this.deduplicator.isDuplicate(event)) {
             logger.debug(`[dedup] Skipping duplicate event: ${event.id}`)
@@ -465,5 +480,28 @@ export class DisasterWarningService {
     /** 给 commands 用：拿到 wolfxHandler 最新的 eqlist 缓存 */
     getEqListCache(): { cenc: Record<string, any>; jma: Record<string, any> } {
         return this.wolfxHandler.getEqListCache()
+    }
+
+    getWeatherAlarmCache(): WeatherAlarmData[] {
+        this.evictWeatherAlarmCache()
+        return Array.from(this.weatherAlarmCache.values())
+    }
+
+    private cacheWeatherAlarm(data: WeatherAlarmData) {
+        this.weatherAlarmCache.set(data.id, data)
+        this.evictWeatherAlarmCache()
+        while (this.weatherAlarmCache.size > WEATHER_CACHE_LIMIT) {
+            const oldest = this.weatherAlarmCache.keys().next().value
+            if (oldest === undefined) break
+            this.weatherAlarmCache.delete(oldest)
+        }
+    }
+
+    private evictWeatherAlarmCache() {
+        const cutoff = Date.now() - WEATHER_CACHE_TTL_MS
+        for (const [id, alarm] of this.weatherAlarmCache) {
+            const timestamp = new Date(alarm.issue_time || alarm.effective_time).getTime()
+            if (Number.isFinite(timestamp) && timestamp < cutoff) this.weatherAlarmCache.delete(id)
+        }
     }
 }

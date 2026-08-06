@@ -3,6 +3,7 @@ import { StructuredTool } from '@langchain/core/tools'
 import { z } from 'zod'
 import type { Config } from './index'
 import { DisasterWarningService } from './service'
+import { WeatherAlarmData } from './models'
 
 const logger = new Logger('disaster-chatluna')
 
@@ -18,6 +19,15 @@ const toolSchema = z.object({
     limit: z.number().int().min(1).max(50).optional().describe('可选，最多返回多少条地震记录，默认使用插件配置。')
 })
 
+const weatherToolSchema = z.object({
+    location: z.string().optional().describe('可选，地区关键词，例如“全国”“广东”“深圳”“海淀”。不填或填“全国”时查询全国。'),
+    type: z.string().optional().describe('可选，气象预警类型，例如“暴雨”“台风”“雷电”“高温”。'),
+    color: z.enum(['白色', '蓝色', '黄色', '橙色', '红色']).optional().describe('可选，预警颜色级别。'),
+    hours: z.number().int().min(1).max(72).optional().describe('可选，查询最近多少小时，默认 24 小时，最多 72 小时。'),
+    limit: z.number().int().min(1).max(50).optional().describe('可选，最多返回多少条，默认 10 条。'),
+    id: z.string().optional().describe('可选，预警 ID。指定后精确查询该预警详情，其他过滤条件会被忽略。')
+})
+
 type ToolSource = 'all' | 'cenc' | 'jma' | 'usgs'
 type ToolInput = {
     action?: 'recent_earthquakes' | 'status'
@@ -28,10 +38,21 @@ type ToolInput = {
     limit?: number
 }
 
+type WeatherToolInput = {
+    location?: string
+    type?: string
+    color?: '白色' | '蓝色' | '黄色' | '橙色' | '红色'
+    hours?: number
+    limit?: number
+    id?: string
+}
+
 interface ChatLunaToolConfig {
     enabled: boolean
     name: string
     description: string
+    weather_name: string
+    weather_description: string
     default_source: ToolSource
     default_limit: number
     default_days: number
@@ -66,11 +87,71 @@ const DEFAULT_CHATLUNA_CONFIG: ChatLunaToolConfig = {
     enabled: false,
     name: 'disaster_warning',
     description: '查询近期地震和灾害预警数据源状态，可按地点、震级、时间范围过滤。适合回答“哪里地震了”“某地最近有没有地震”“关心的人所在地区是否有地震”等问题。',
+    weather_name: 'weather_warning',
+    weather_description: '查询中国近期气象预警，可按地区、预警类型、颜色级别和时间范围过滤，也可按预警 ID 查询详情。适合回答“某地近期有天气预警吗”“有哪些暴雨或台风预警”等问题。',
     default_source: 'all',
     default_limit: 8,
     default_days: 7,
     min_magnitude: 4,
     include_usgs_when_all: true
+}
+
+export class WeatherWarningTool extends StructuredTool<any, WeatherToolInput, WeatherToolInput, string> {
+    name: string
+    description: string
+    schema: any = weatherToolSchema
+
+    constructor(private config: Config, private service: DisasterWarningService) {
+        super({})
+        const cfg = getChatLunaConfig(config)
+        this.name = normalizeToolName(cfg.weather_name, DEFAULT_CHATLUNA_CONFIG.weather_name)
+        this.description = cfg.weather_description.trim() || DEFAULT_CHATLUNA_CONFIG.weather_description
+    }
+
+    async _call(input: WeatherToolInput) {
+        try {
+            const alarms = this.service.getWeatherAlarmCache()
+            if (input.id?.trim()) {
+                const id = input.id.trim()
+                const alarm = alarms.find((item) => item.id === id)
+                return JSON.stringify(compact({
+                    type: 'weather_warning_detail',
+                    generated_at: new Date().toISOString(),
+                    found: Boolean(alarm),
+                    warning: alarm ? formatWeatherAlarm(alarm, true) : undefined,
+                    note: alarm ? undefined : '当前 72 小时内接收到的气象预警中未找到该 ID。'
+                }), null, 2)
+            }
+
+            const location = input.location?.trim()
+            const warningType = input.type?.trim()
+            const hours = clamp(input.hours ?? 24, 1, 72)
+            const limit = clamp(input.limit ?? 10, 1, 50)
+            const cutoff = Date.now() - hours * 3600_000
+            const filtered = alarms
+                .filter((alarm) => weatherTimeValue(alarm) >= cutoff)
+                .filter((alarm) => !location || ['全国', '全國'].includes(location) || matchesWeatherText(alarm, location))
+                .filter((alarm) => !warningType || matchesWeatherText(alarm, warningType))
+                .filter((alarm) => !input.color || detectWeatherColor(alarm) === input.color)
+                .sort((a, b) => weatherTimeValue(b) - weatherTimeValue(a))
+                .slice(0, limit)
+
+            return JSON.stringify(compact({
+                type: 'recent_weather_warnings',
+                generated_at: new Date().toISOString(),
+                query: { location: location || '全国', warning_type: warningType, color: input.color, hours, limit },
+                count: filtered.length,
+                warnings: filtered.map((alarm) => formatWeatherAlarm(alarm, false)),
+                note: alarms.length
+                    ? '结果来自插件运行期间接收的 FAN Studio 中国气象局实时预警，最多保留 72 小时。'
+                    : '尚未接收到气象预警数据。工具仅能查询插件启动后通过实时数据源收到的预警。'
+            }), null, 2)
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.warn(`ChatLuna weather tool call failed: ${message}`)
+            return `气象预警查询失败：${message}`
+        }
+    }
 }
 
 export class DisasterWarningTool extends StructuredTool<any, ToolInput, ToolInput, string> {
@@ -85,7 +166,7 @@ export class DisasterWarningTool extends StructuredTool<any, ToolInput, ToolInpu
     ) {
         super({})
         const cfg = getChatLunaConfig(config)
-        this.name = normalizeToolName(cfg.name)
+        this.name = normalizeToolName(cfg.name, DEFAULT_CHATLUNA_CONFIG.name)
         this.description = cfg.description.trim() || DEFAULT_CHATLUNA_CONFIG.description
     }
 
@@ -222,7 +303,7 @@ export function applyChatLunaTools(ctx: Context, config: Config, service: Disast
             return
         }
 
-        const toolName = normalizeToolName(cfg.name)
+        const toolName = normalizeToolName(cfg.name, DEFAULT_CHATLUNA_CONFIG.name)
         ctx.effect(() => chatluna.platform.registerTool(toolName, {
             description: cfg.description.trim() || DEFAULT_CHATLUNA_CONFIG.description,
             selector() {
@@ -244,7 +325,29 @@ export function applyChatLunaTools(ctx: Context, config: Config, service: Disast
             }
         }))
 
-        logger.info(`已注册 ChatLuna 灾害预警工具：${toolName}`)
+        const weatherToolName = normalizeToolName(cfg.weather_name, DEFAULT_CHATLUNA_CONFIG.weather_name)
+        ctx.effect(() => chatluna.platform.registerTool(weatherToolName, {
+            description: cfg.weather_description.trim() || DEFAULT_CHATLUNA_CONFIG.weather_description,
+            selector() {
+                return true
+            },
+            createTool() {
+                return new WeatherWarningTool(config, service)
+            },
+            meta: {
+                source: 'extension',
+                group: 'disaster-warning',
+                tags: ['disaster', 'weather', 'warning'],
+                defaultAvailability: {
+                    enabled: true,
+                    main: true,
+                    chatluna: true,
+                    characterScope: 'all'
+                }
+            }
+        }))
+
+        logger.info(`已注册 ChatLuna 灾害预警工具：${toolName}, ${weatherToolName}`)
     })
 }
 
@@ -255,9 +358,9 @@ export function getChatLunaConfig(config: Config): ChatLunaToolConfig {
     }
 }
 
-function normalizeToolName(name: string | undefined): string {
-    const normalized = (name || DEFAULT_CHATLUNA_CONFIG.name).trim()
-    return normalized || DEFAULT_CHATLUNA_CONFIG.name
+function normalizeToolName(name: string | undefined, fallback: string): string {
+    const normalized = (name || fallback).trim()
+    return normalized || fallback
 }
 
 function expandSources(source: ToolSource, includeUsgsWhenAll: boolean): ToolSource[] {
@@ -387,6 +490,53 @@ function buildSearchTerms(location: string | undefined): string[] {
 
 function normalizeText(value: unknown): string {
     return String(value ?? '').toLowerCase().replace(/[\s,，、()（）-]/g, '')
+}
+
+function weatherTimeValue(alarm: WeatherAlarmData): number {
+    return timeValue(alarm.issue_time || alarm.effective_time)
+}
+
+function matchesWeatherText(alarm: WeatherAlarmData, keyword: string): boolean {
+    const needle = normalizeText(keyword)
+    const haystack = normalizeText([
+        alarm.title,
+        alarm.headline,
+        alarm.description,
+        alarm.type,
+        alarm.alert_level,
+        ...(alarm.affected_areas || [])
+    ].join(' '))
+    return haystack.includes(needle)
+}
+
+function detectWeatherColor(alarm: WeatherAlarmData): string | undefined {
+    const text = `${alarm.alert_level || ''} ${alarm.type || ''} ${alarm.title || ''} ${alarm.headline || ''}`.toLowerCase()
+    const colors: Array<[string, string[]]> = [
+        ['红色', ['红色', '_red', '-red']],
+        ['橙色', ['橙色', '_orange', '-orange']],
+        ['黄色', ['黄色', '_yellow', '-yellow']],
+        ['蓝色', ['蓝色', '_blue', '-blue']],
+        ['白色', ['白色', '_white', '-white']]
+    ]
+    return colors.find(([, aliases]) => aliases.some((alias) => text.includes(alias)))?.[0]
+}
+
+function formatWeatherAlarm(alarm: WeatherAlarmData, includeDescription: boolean) {
+    return compact({
+        id: alarm.id,
+        source: 'FAN Studio / 中国气象局',
+        title: alarm.title,
+        headline: alarm.headline,
+        warning_type: alarm.type,
+        color: detectWeatherColor(alarm),
+        alert_level: alarm.alert_level,
+        issue_time: alarm.issue_time,
+        effective_time: alarm.effective_time,
+        affected_areas: alarm.affected_areas,
+        latitude: alarm.latitude,
+        longitude: alarm.longitude,
+        description: includeDescription ? alarm.description : undefined
+    })
 }
 
 function clamp(value: number, min: number, max: number): number {
